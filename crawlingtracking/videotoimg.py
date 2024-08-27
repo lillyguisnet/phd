@@ -22,7 +22,7 @@ def get_supported_image_extensions():
     return ['.png', '.jpg', '.jpeg']
 
 
-def process_video_for_sam2(video_path, output_dir, fps=None, max_dimension=None, output_format='png', force_reprocess=False, convert_existing=False):
+def process_video_for_sam2(video_path, output_dir, fps=None, max_dimension=None, output_format='jpg', force_reprocess=False, convert_existing=False):
     video_path = Path(video_path)
     output_dir = Path(output_dir)
     
@@ -150,8 +150,8 @@ def process_video_for_sam2(video_path, output_dir, fps=None, max_dimension=None,
     }
 
 # Example usage
-video_path = "/home/maxime/prg/phd/crawlingtracking/data_original/food/a-02252022132222-0000.avi"
-output_dir = "/home/maxime/prg/phd/crawlingtracking/tstvideo_tojpg"
+video_path = "/home/maxime/prg/phd/cowz.mp4"
+output_dir = "/home/maxime/prg/phd/crawlingtracking/tstvideo_tojpg/cowz"
 
 print("Supported video extensions:", get_supported_video_extensions())
 

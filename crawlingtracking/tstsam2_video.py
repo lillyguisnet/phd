@@ -50,6 +50,8 @@ def show_points(coords, labels, ax, marker_size=200):
 video_dir = "/home/maxime/prg/phd/crawlingtracking/tstvideo_tojpg/tstcropped"
 video_dir = "/home/maxime/prg/phd/crawlingtracking/tstvideo_tojpg/a-02252022132222-0000"
 video_dir = "/home/maxime/prg/phd/crawlingtracking/tstvideo_tojpg/fixed_crop"
+video_dir = "/home/maxime/prg/phd/crawlingtracking/tstvideo_tojpg/cropprompt"
+video_dir = "/home/maxime/prg/phd/crawlingtracking/tstvideo_tojpg/cowz/cowz"
 
 # scan all the png frame names in this directory
 frame_names = [
@@ -68,18 +70,18 @@ plt.imshow(image)
 plt.savefig("tst.png")
 plt.close()
 
-predictor.reset_state(inference_state) #if made previous inference
+#predictor.reset_state(inference_state) #if made previous inference
 inference_state = predictor.init_state(video_path=video_dir)
 
 ###Add click on the first frame
 ann_frame_idx = 0  # the frame index we interact with
 ann_obj_id = 1  # give a unique id to each object we interact with (it can be any integers)
 
-#Get random worm pixel from segmentation mask
+""" #Get random worm pixel from segmentation mask
 worm0 = np.load("/home/maxime/prg/phd/tstvideo_1worm.npy") #Mask for first worm full frame
 #Save array as image
-""" plt.imshow(worm0)
-plt.savefig("tstarr.png") """
+plt.imshow(worm0)
+plt.savefig("tstarr.png")
 # Find the indices of all elements with a value of 1
 indices = np.argwhere(worm0 == 1)
 # Check if there are any elements with a value of 1
@@ -88,7 +90,7 @@ if indices.size > 0:
     random_index = indices[np.random.choice(indices.shape[0])]
     print("Random coordinate with a value of 1:", random_index)
 else:
-    print("No elements with a value of 1 found in the array.")
+    print("No elements with a value of 1 found in the array.") """
 
 
 # Let's add a positive click at (x, y) = (210, 350) to get started
@@ -97,8 +99,21 @@ points = np.array([[1317, 1481]], dtype=np.float32) #full frame
 points = np.array([[227, 250]], dtype=np.float32) #crop
 points = np.array([[17, 40]], dtype=np.float32) #tight crop
 points = np.array([[64, 45]], dtype=np.float32) #fixed crop
+points = np.array([[1400, 500]], dtype=np.float32) #cowz head
 # for labels, `1` means positive click and `0` means negative click
 labels = np.array([1], np.int32)
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+
+###Two clicks
+points = np.array([[500, 1300], [400, 1000]], dtype=np.float32)
+# for labels, `1` means positive click and `0` means negative click
+labels = np.array([1, 0], np.int32)
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
     inference_state=inference_state,
     frame_idx=ann_frame_idx,
@@ -117,6 +132,7 @@ plt.savefig("tstclick.png")
 plt.close()
 
 
+
 ###Propagate to video
 # run propagation throughout the video and collect the results in a dict
 video_segments = {}  # video_segments contains the per-frame segmentation results
@@ -127,7 +143,7 @@ for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
     }
 
 #Save propagation results
-with open('propagation_fullframe.pkl', 'wb') as file:
+with open('propagation_cowz.pkl', 'wb') as file:
     pickle.dump(video_segments, file)
 
 with open('propagation_fixedcrop.pkl', 'wb') as file:
@@ -179,16 +195,18 @@ def overlay_mask_on_image(image_path, mask, color=(0, 255, 0), alpha=0.5):
     return overlaid_image
 
 # Prepare the video writer
-output_video_path = "fixed_segmentation_result.mp4"
+output_video_path = "cowzhead_segmentation_result.mp4"
 frame = cv2.imread(os.path.join(video_dir, frame_names[0]))
+#frame = cv2.imread(os.path.join(video_dir, "000000.jpg"))
 if frame is None:
     raise ValueError(f"Could not read first frame from {os.path.join(video_dir, frame_names[0])}")
 height, width, _ = frame.shape
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-out = cv2.VideoWriter(output_video_path, fourcc, 10.0, (width, height))
+out = cv2.VideoWriter(output_video_path, fourcc, 29.90, (width, height))
 
 # Process each frame
 for frame_idx in range(len(frame_names)):
+    print(frame_idx)
     image_path = os.path.join(video_dir, frame_names[frame_idx])
     
     try:

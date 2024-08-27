@@ -7,12 +7,13 @@ from scipy.spatial.distance import euclidean
 from scipy.signal import savgol_filter
 from matplotlib.patches import Patch
 from scipy.signal import medfilt
+import os
 
 with open('propagation_fullframe.pkl', 'rb') as file:
     video_segments = pickle.load(file)
 
-with open('wormshape_results.pkl', 'rb') as file:
-    cropped_analysis = pickle.load(file)   
+with open('wormshape_hdresults.pkl', 'rb') as file:
+    hdshape = pickle.load(file)   
 
 def get_centroid(mask):
     # Ensure the mask is 2D
@@ -24,10 +25,12 @@ def get_centroid(mask):
 
 # Process all frames
 centroids = {}
-for frame, segmentation in video_segments.items():
-    print(frame)
-    mask = segmentation[1]  # Assuming the mask is always under key 1
-    centroids[frame] = get_centroid(mask)
+frames = hdshape['frames']
+masks = hdshape['masks']
+for i, frame_num in enumerate(frames):
+    print("Centroid: " + frame_num)
+    mask = masks[i]  # Get the mask for this frame
+    centroids[frame_num] = get_centroid(mask)
 
 
 def smooth_path(centroids, window_length=11, poly_order=3):
@@ -147,8 +150,10 @@ def calculate_velocity(smooth_centroids, fps=10):
     velocity = np.gradient(positions, axis=0) * fps
     
     # Smooth the velocity
-    v_x = savgol_filter(velocity[:, 0], window_length=11, polyorder=3)
-    v_y = savgol_filter(velocity[:, 1], window_length=11, polyorder=3)
+    #v_x = savgol_filter(velocity[:, 0], window_length=11, polyorder=3)
+    #v_y = savgol_filter(velocity[:, 1], window_length=11, polyorder=3)
+    v_x=velocity[:, 0]
+    v_y=velocity[:, 1]
     
     return {f: (vx, vy) for f, vx, vy in zip(frames, v_x, v_y)}
 
@@ -161,14 +166,15 @@ def align_data(full_frame_centroids, cropped_analysis):
             aligned_data[frame] = {
                 'centroid': full_frame_centroids[frame],
                 'head_bend': cropped_analysis['smoothed_head_bends'][cropped_analysis['frames'].index(frame)],
-                'smooth_points': cropped_analysis['smooth_points'][cropped_analysis['frames'].index(frame)]
+                'smooth_points': cropped_analysis['smooth_points'][cropped_analysis['frames'].index(frame)],
+                'head_coord': cropped_analysis['head_positions'][cropped_analysis['frames'].index(frame)],
+                'tail_coord': cropped_analysis['tail_positions'][cropped_analysis['frames'].index(frame)]
             }
     return aligned_data
 
-def calculate_orientation_vector(smooth_points):
-    """Calculate the orientation vector of the worm using the head and the point at the first quarter."""
-    head = smooth_points[0]
-    segment_point = smooth_points[len(smooth_points) // 10]  # Point at the first quarter of the worm's body
+def calculate_orientation_vector(smooth_points, head, tail):
+    """Calculate the orientation vector of the worm."""
+    segment_point = smooth_points[len(smooth_points) // 10]  # Point at the th of the worm's body
     return np.array(head) - np.array(segment_point)
 
 
@@ -190,7 +196,7 @@ def calculate_movement_features(velocities, orientations, window_size=5):
     
     return smooth_speed, smooth_angles
 
-def classify_movement_window(speeds, angles, speed_threshold=0.4, angle_threshold=130):
+def classify_movement_window(speeds, angles, speed_threshold=0, angle_threshold=100):
     """Classify movement based on windowed features."""
     if np.mean(speeds) < speed_threshold:
         return 'stationary'
@@ -198,8 +204,6 @@ def classify_movement_window(speeds, angles, speed_threshold=0.4, angle_threshol
         return 'forward'
     else:
         return 'backward'
-    
-
 
 
 def analyze_worm_movement(full_frame_centroids, cropped_analysis, fps=10, window_size=5):
@@ -209,17 +213,82 @@ def analyze_worm_movement(full_frame_centroids, cropped_analysis, fps=10, window
     
     frames = sorted(aligned_data.keys())
     velocity_vectors = np.array([velocities[f] for f in frames])
-    orientation_vectors = np.array([calculate_orientation_vector(aligned_data[f]['smooth_points']) for f in frames])
+    orientation_vectors = np.array([calculate_orientation_vector(aligned_data[f]['smooth_points'], aligned_data[f]['head_coord'], aligned_data[f]['tail_coord']) for f in frames])
     
     speeds, angles = calculate_movement_features(velocity_vectors, orientation_vectors, window_size)
     
     movement_classification = {}
+    forward_velocities = []
+    backward_velocities = []
+    forward_accelerations = []
+    backward_accelerations = []
+    per_frame_speeds = {}
+    
+    # Bout analysis variables
+    forward_bouts = 0
+    backward_bouts = 0
+    current_bout_type = None
+    bout_lengths = {'forward': [], 'backward': []}
+    current_bout_length = 0
+    
+    # Furthest point analysis variables
+    start_point = np.array(aligned_data[frames[0]]['centroid'])
+    furthest_point = start_point
+    max_distance = 0
+    furthest_frame = frames[0]
+    
     for i, frame in enumerate(frames):
         start = max(0, i - window_size // 2)
         end = min(len(frames), i + window_size // 2 + 1)
-        movement_classification[frame] = classify_movement_window(
-            speeds[start:end], angles[start:end]
-        )
+        movement_type = classify_movement_window(speeds[start:end], angles[start:end])
+        movement_classification[frame] = movement_type
+        
+        per_frame_speeds[frame] = np.linalg.norm(velocity_vectors[i])
+        
+        # Bout analysis
+        if movement_type in ['forward', 'backward']:
+            if current_bout_type != movement_type:
+                if current_bout_type is not None:
+                    bout_lengths[current_bout_type].append(current_bout_length)
+                if movement_type == 'forward':
+                    forward_bouts += 1
+                else:
+                    backward_bouts += 1
+                current_bout_type = movement_type
+                current_bout_length = 1
+            else:
+                current_bout_length += 1
+        else:  # stationary
+            if current_bout_type is not None:
+                bout_lengths[current_bout_type].append(current_bout_length)
+                current_bout_type = None
+                current_bout_length = 0
+        
+        if movement_type == 'forward':
+            forward_velocities.append(velocity_vectors[i])
+        elif movement_type == 'backward':
+            backward_velocities.append(velocity_vectors[i])
+        
+        # Furthest point analysis
+        current_point = np.array(aligned_data[frame]['centroid'])
+        distance = np.linalg.norm(current_point - start_point)
+        if distance > max_distance:
+            max_distance = distance
+            furthest_point = current_point
+            furthest_frame = frame
+    
+    # Add the last bout if it exists
+    if current_bout_type is not None:
+        bout_lengths[current_bout_type].append(current_bout_length)
+    
+    # Calculate accelerations
+    acceleration = np.gradient(velocity_vectors, axis=0) * fps
+    
+    for i, frame in enumerate(frames):
+        if movement_classification[frame] == 'forward':
+            forward_accelerations.append(acceleration[i])
+        elif movement_classification[frame] == 'backward':
+            backward_accelerations.append(acceleration[i])
     
     forward_frames = sum(1 for v in movement_classification.values() if v == 'forward')
     backward_frames = sum(1 for v in movement_classification.values() if v == 'backward')
@@ -237,11 +306,23 @@ def analyze_worm_movement(full_frame_centroids, cropped_analysis, fps=10, window
     straight_line_distance = np.linalg.norm(end_point - start_point)
     sinuosity = total_distance / straight_line_distance if straight_line_distance > 0 else 0
     
-    # Calculate average velocity and acceleration
-    velocity_vectors = np.array([velocities[f] for f in sorted(velocities.keys())])
+    # Calculate average velocity and acceleration for all movements
     avg_velocity = np.mean(velocity_vectors, axis=0)
-    acceleration = np.gradient(velocity_vectors, axis=0) * fps
     avg_acceleration = np.mean(acceleration, axis=0)
+    
+    # Calculate average velocity and acceleration for forward and backward movements
+    avg_forward_velocity = np.mean(forward_velocities, axis=0) if forward_velocities else np.array([0, 0])
+    avg_backward_velocity = np.mean(backward_velocities, axis=0) if backward_velocities else np.array([0, 0])
+    avg_forward_acceleration = np.mean(forward_accelerations, axis=0) if forward_accelerations else np.array([0, 0])
+    avg_backward_acceleration = np.mean(backward_accelerations, axis=0) if backward_accelerations else np.array([0, 0])
+    
+    # Calculate average speeds for forward and backward movements
+    avg_forward_speed = np.mean(np.linalg.norm(forward_velocities, axis=1)) if forward_velocities else 0
+    avg_backward_speed = np.mean(np.linalg.norm(backward_velocities, axis=1)) if backward_velocities else 0
+    
+    # Calculate average bout lengths
+    avg_forward_bout_length = np.mean(bout_lengths['forward']) if bout_lengths['forward'] else 0
+    avg_backward_bout_length = np.mean(bout_lengths['backward']) if bout_lengths['backward'] else 0
     
     return {
         'forward_frames': forward_frames,
@@ -253,13 +334,31 @@ def analyze_worm_movement(full_frame_centroids, cropped_analysis, fps=10, window
         'sinuosity': sinuosity,
         'avg_velocity': avg_velocity,
         'avg_acceleration': avg_acceleration,
+        'avg_forward_velocity': avg_forward_velocity,
+        'avg_backward_velocity': avg_backward_velocity,
+        'avg_forward_acceleration': avg_forward_acceleration,
+        'avg_backward_acceleration': avg_backward_acceleration,
+        'avg_forward_speed': avg_forward_speed,
+        'avg_backward_speed': avg_backward_speed,
         'movement_classification': movement_classification,
         'smooth_centroids': smooth_centroids,
-        'velocities': velocities
+        'velocities': velocities,
+        'per_frame_speeds': per_frame_speeds,
+        'forward_bouts': forward_bouts,
+        'backward_bouts': backward_bouts,
+        'bout_lengths': bout_lengths,
+        'avg_forward_bout_length': avg_forward_bout_length,
+        'avg_backward_bout_length': avg_backward_bout_length,
+        'furthest_point': furthest_point,
+        'furthest_point_distance': max_distance,
+        'furthest_point_frame': furthest_frame
     }
 
 # Assuming you have 'centroids' from full frame analysis and 'cropped_analysis' from cropped video analysis
-results = analyze_worm_movement(centroids, cropped_analysis)
+results = analyze_worm_movement(centroids, hdshape)
+
+
+
 
 print(f"Forward frames: {results['forward_frames']}")
 print(f"Backward frames: {results['backward_frames']}")
@@ -269,6 +368,11 @@ print(f"Average speed: {results['avg_speed']:.2f} pixels/frame")
 print(f"Sinuosity: {results['sinuosity']:.2f}")
 print(f"Average velocity: ({results['avg_velocity'][0]:.2f}, {results['avg_velocity'][1]:.2f}) pixels/frame")
 print(f"Average acceleration: ({results['avg_acceleration'][0]:.2f}, {results['avg_acceleration'][1]:.2f}) pixels/frame^2")
+per_frame_speeds = results['per_frame_speeds']
+max_speed = max(per_frame_speeds.values())
+max_speed_frame = max(per_frame_speeds, key=per_frame_speeds.get)
+print(f"Maximum speed: {max_speed:.2f} pixels/frame at frame {max_speed_frame}")
+
 
 # Visualize the movement classification
 frames = sorted(results['movement_classification'].keys())

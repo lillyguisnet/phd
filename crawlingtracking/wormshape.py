@@ -14,9 +14,13 @@ from scipy.signal import find_peaks
 from scipy.signal import savgol_filter
 from scipy.signal import stft
 from scipy.signal import welch, find_peaks
+import os
 
 with open('propagation_fixedcrop.pkl', 'rb') as file:
     video_segments = pickle.load(file)
+
+with open('hd_video_segments.pkl', 'rb') as file:
+    hd_video_segments = pickle.load(file)
 
 def smooth_metric(data, window_length=11, poly_order=3):
     return savgol_filter(data, window_length, poly_order)
@@ -86,11 +90,110 @@ def track_endpoints(frames, smooth_points):
         endpoints.append((skeleton[0], skeleton[-1]))
     return np.array(endpoints)
 
-def identify_head(endpoints, num_frames=10):
-    movements = np.diff(endpoints, axis=0)
-    cumulative_movement = np.sum(np.abs(movements[:num_frames]), axis=0)
-    head_index = np.argmax(np.sum(cumulative_movement, axis=1))
-    return head_index
+from scipy.optimize import linear_sum_assignment
+
+def group_endpoints(endpoints, window_size):
+    """
+    Group endpoints based on their proximity across frames.
+    Returns grouped endpoints and the mapping of original indices to group indices.
+    """
+    grouped_endpoints = np.zeros((2, window_size, 2))
+    index_mapping = np.zeros((window_size, 2), dtype=int)
+    
+    # Use the first frame as initial groups
+    grouped_endpoints[0, 0] = endpoints[0, 0]
+    grouped_endpoints[1, 0] = endpoints[0, 1]
+    index_mapping[0] = [0, 1]
+    
+    for i in range(1, window_size):
+        # Calculate distances between current endpoints and existing groups
+        distances = np.linalg.norm(endpoints[i][:, np.newaxis] - grouped_endpoints[:, i-1], axis=2)
+        
+        # Use Hungarian algorithm to find optimal assignment
+        row_ind, col_ind = linear_sum_assignment(distances)
+        
+        # Assign endpoints to groups based on the optimal assignment
+        grouped_endpoints[col_ind, i] = endpoints[i, row_ind]
+        index_mapping[i] = col_ind
+    
+    return grouped_endpoints, index_mapping
+
+def continuous_head_identification(endpoints, frames, window_size=10, error_threshold=5):
+    head_positions = []
+    tail_positions = []
+    confidences = []
+    current_head_index = 0
+    
+    for i in range(len(frames)):
+
+        # Calculate the start and end indices for the sliding window
+        start = max(0, i - window_size // 2)
+        end = min(len(frames), start + window_size)
+             # Adjust start if end is at the boundary
+        if end == len(frames):
+            start = max(0, end - window_size)
+        # For initial frames, use movement-based identification
+        window_endpoints = endpoints[start:end]
+        grouped_endpoints, index_mapping = group_endpoints(window_endpoints, end - start)
+        movements = np.diff(grouped_endpoints, axis=1)
+        cumulative_movement = np.sum(np.abs(movements), axis=(1, 2))
+        head_group_index = np.argmax(cumulative_movement)
+        # Map the head group index back to the original endpoint index for the current frame
+        frame_index_in_window = i - start
+        current_head_index = np.where(index_mapping[frame_index_in_window] == head_group_index)[0][0]
+        current_head_position = endpoints[i, current_head_index]
+        current_tail_position = endpoints[i, 1 - current_head_index]  # The other endpoint is the tail
+        confidence = 1.0  # High confidence for initial determination
+               
+        # Check for sudden changes
+        if len(head_positions) > 0:
+            prev_head_position = head_positions[-1]
+            distance = np.linalg.norm(current_head_position - prev_head_position)
+            if distance > 25:  # If head moved more than portion of worm length
+                # Potential error detected
+                confidence = 0.5  # Lower confidence due to change
+                
+                # Error correction
+                if len(head_positions) >= error_threshold:
+                    # Check if this change is consistent with recent history
+                    recent_head_positions = head_positions[-error_threshold:]
+                    #if currend head coords is not within 25 pix of one of the last threshold positions
+                    if any(np.linalg.norm(pos - current_head_position) > 25 for pos in recent_head_positions):
+                        # This change is not supported by recent history, likely an error
+                        # Find the closest endpoint in the current frame to the previous head position
+                        distances = np.linalg.norm(endpoints[i] - prev_head_position, axis=1)
+                        closest_index = np.argmin(distances)
+                        current_head_position = endpoints[i, closest_index]
+                        current_tail_position = endpoints[i, 1 - closest_index]
+                        current_head_index = closest_index
+                        confidence = 0.7  # Moderate confidence after correction
+        
+            else:
+                confidence = 0.8  # High confidence when consistent
+                
+        else:
+            confidence = 0.9  # High confidence for first comparison
+            
+        previous_head_index = current_head_index
+        head_positions.append(current_head_position)
+        tail_positions.append(current_tail_position)
+        confidences.append(confidence)
+    
+    return head_positions, tail_positions, confidences
+
+
+def apply_head_correction(head_positions, confidences, correction_window=5):
+    corrected_positions = head_positions.copy()
+    for i in range(len(head_positions)):
+        if confidences[i] < 0.7:  # If confidence is low
+            # Look at surrounding frames
+            start = max(0, i - correction_window)
+            end = min(len(head_positions), i + correction_window + 1)
+            surrounding_positions = head_positions[start:end]
+            # Choose the median head position in the surrounding frames
+            corrected_positions[i] = np.median(surrounding_positions, axis=0)
+    return corrected_positions
+
 
 def calculate_head_bend(skeleton, head_index, segment_length=5):
     head_segment = skeleton[0:segment_length] if head_index == 0 else skeleton[-segment_length:]
@@ -99,9 +202,52 @@ def calculate_head_bend(skeleton, head_index, segment_length=5):
     angle = np.arctan2(np.cross(head_vector, body_vector), np.dot(head_vector, body_vector))
     return np.degrees(angle)
 
+def analyze_head_bends(smoothed_head_bends, fps):
+    # Find peaks and troughs
+    peak_threshold = np.std(smoothed_head_bends)/3
+    peaks, _ = find_peaks(smoothed_head_bends, prominence=peak_threshold, distance=8)
+    troughs, _ = find_peaks(-np.array(smoothed_head_bends), prominence=peak_threshold, distance=8)
+    
+    # Calculate metrics
+    num_peaks = len(peaks)
+    num_troughs = len(troughs)
+    avg_peak_depth = np.mean(np.array(smoothed_head_bends)[peaks])
+    avg_trough_depth = np.mean(np.array(smoothed_head_bends)[troughs])
+    max_peak_depth = np.max(np.array(smoothed_head_bends)[peaks])
+    max_trough_depth = np.min(np.array(smoothed_head_bends)[troughs])
+    
+    # Calculate bending frequency
+    all_extrema = sorted(np.concatenate([peaks, troughs]))
+    if len(all_extrema) > 1:
+        times = np.arange(len(smoothed_head_bends)) / fps
+        extrema_times = times[all_extrema]
+        bend_intervals = np.diff(extrema_times)
+        avg_bend_frequency = 1 / np.mean(bend_intervals)
+    else:
+        avg_bend_frequency = 0
+
+    # Perform FFT on smoothed data
+    fft = np.fft.fft(smoothed_head_bends)
+    freqs = np.fft.fftfreq(len(smoothed_head_bends), 1/fps)
+    dominant_freq = freqs[np.argmax(np.abs(fft[1:]) + 1)]
+    
+    return {
+        'num_peaks': num_peaks,
+        'num_troughs': num_troughs,
+        'avg_peak_depth': avg_peak_depth,
+        'avg_trough_depth': avg_trough_depth,
+        'max_peak_depth': max_peak_depth,
+        'max_trough_depth': max_trough_depth,
+        'avg_bend_frequency': avg_bend_frequency,
+        'dominant_freq': dominant_freq,
+        'peaks': peaks,
+        'troughs': troughs,
+        'fft': fft,
+        'freqs': freqs
+    }
 
 
-def analyze_shape(skeleton, frame_num, head_index):
+def analyze_shape(skeleton, frame_num, head_position):
     longest_path = find_longest_path(skeleton)
     
     t = np.arange(len(longest_path))
@@ -147,6 +293,23 @@ def analyze_shape(skeleton, frame_num, head_index):
     spatial_freq = np.abs(np.fft.fft(curvature))
     dominant_spatial_freq = np.abs(np.fft.fftfreq(len(curvature))[np.argmax(spatial_freq[1:]) + 1])
 
+    if head_position is None:
+        return {
+            'frame': frame_num,
+            'smooth_points': smooth_points,
+            'curvature': curvature,
+            'max_amplitude': max_amplitude,
+            'avg_amplitude': avg_amplitude,
+            'wavelength': avg_wavelength,
+            'worm_length': worm_length,
+            'wave_number': wave_number,
+            'normalized_wavelength': normalized_wavelength,
+            'dominant_spatial_freq': dominant_spatial_freq,
+            'head_bend': None
+        }
+        
+    # Find the index of the point closest to the head position
+    head_index = np.argmin(np.sum((smooth_points - head_position)**2, axis=1))
     head_bend = calculate_head_bend(smooth_points, head_index)
 
     return {
@@ -177,9 +340,11 @@ def analyze_video(segmentation_dict, fps=10, window_size=5, overlap=2.5):
     normalized_wavelengths = []
     dominant_spatial_freqs = []
     head_bends = []
+    masks = []
     
     # First pass to get endpoints
     for frame_num, frame_data in segmentation_dict.items():
+        print("Find head: " + str(frame_num))
         mask = frame_data[1][0]
         cleaned_mask = clean_mask(mask)
         skeleton = get_skeleton(cleaned_mask)
@@ -196,18 +361,27 @@ def analyze_video(segmentation_dict, fps=10, window_size=5, overlap=2.5):
         normalized_wavelengths.append(frame_results['normalized_wavelength'])
         dominant_spatial_freqs.append(frame_results['dominant_spatial_freq'])
         head_bends.append(frame_results['head_bend'])
+        masks.append(cleaned_mask)
 
     # Identify head
     endpoints = track_endpoints(frames, smooth_points)
-    head_index = identify_head(endpoints)
+    #head_index = identify_head(endpoints)
+    # Apply continuous head identification with error detection and correction
+    head_positions, tail_positions, confidences = continuous_head_identification(endpoints, frames)
+    #corrected_head_positions = apply_head_correction(head_positions, confidences)
+    corrected_head_positions = head_positions
 
     # Second pass with head information
     frames, smooth_points, curvatures, max_amplitudes, avg_amplitudes, wavelengths, worm_lengths, wave_numbers, normalized_wavelengths, dominant_spatial_freqs, head_bends = ([] for _ in range(11))
     
     for frame_num, frame_data in segmentation_dict.items():
+        print("Analyze shape: " + str(frame_num))
         mask = frame_data[1][0]
         cleaned_mask = clean_mask(mask)
         skeleton = get_skeleton(cleaned_mask)
+
+        head_index = corrected_head_positions[frame_num]
+        #head_index = head_positions[frame_num]
         
         frame_results = analyze_shape(skeleton, frame_num, head_index)
         frames.append(frame_results['frame'])
@@ -287,52 +461,16 @@ def analyze_video(segmentation_dict, fps=10, window_size=5, overlap=2.5):
         'fps': fps,
         'curvature_time_series': curvature_1d
     }
+
+    # Add head tracking information to the final results
+    final_results['head_positions'] = corrected_head_positions
+    final_results['tail_positions'] = tail_positions
+    final_results['head_position_confidences'] = confidences
+    final_results['masks'] = masks
     
     return final_results
 
-def analyze_head_bends(smoothed_head_bends, fps):
-    # Find peaks and troughs
-    peak_threshold = np.std(smoothed_head_bends)/3
-    peaks, _ = find_peaks(smoothed_head_bends, prominence=peak_threshold, distance=8)
-    troughs, _ = find_peaks(-np.array(smoothed_head_bends), prominence=peak_threshold, distance=8)
-    
-    # Calculate metrics
-    num_peaks = len(peaks)
-    num_troughs = len(troughs)
-    avg_peak_depth = np.mean(np.array(smoothed_head_bends)[peaks])
-    avg_trough_depth = np.mean(np.array(smoothed_head_bends)[troughs])
-    max_peak_depth = np.max(np.array(smoothed_head_bends)[peaks])
-    max_trough_depth = np.min(np.array(smoothed_head_bends)[troughs])
-    
-    # Calculate bending frequency
-    all_extrema = sorted(np.concatenate([peaks, troughs]))
-    if len(all_extrema) > 1:
-        times = np.arange(len(smoothed_head_bends)) / fps
-        extrema_times = times[all_extrema]
-        bend_intervals = np.diff(extrema_times)
-        avg_bend_frequency = 1 / np.mean(bend_intervals)
-    else:
-        avg_bend_frequency = 0
 
-    # Perform FFT on smoothed data
-    fft = np.fft.fft(smoothed_head_bends)
-    freqs = np.fft.fftfreq(len(smoothed_head_bends), 1/fps)
-    dominant_freq = freqs[np.argmax(np.abs(fft[1:]) + 1)]
-    
-    return {
-        'num_peaks': num_peaks,
-        'num_troughs': num_troughs,
-        'avg_peak_depth': avg_peak_depth,
-        'avg_trough_depth': avg_trough_depth,
-        'max_peak_depth': max_peak_depth,
-        'max_trough_depth': max_trough_depth,
-        'avg_bend_frequency': avg_bend_frequency,
-        'dominant_freq': dominant_freq,
-        'peaks': peaks,
-        'troughs': troughs,
-        'fft': fft,
-        'freqs': freqs
-    }
 
 def visualize_worm_analysis(results):
     frames = results['frames']
@@ -494,14 +632,95 @@ def visualize_worm_analysis(results):
  
 # Analyze the video
 cropped_analysis = analyze_video(video_segments)
-with open('wormshape_results.pkl', 'wb') as file:
-    pickle.dump(results, file)
+
+fframe_analysis = analyze_video(hd_video_segments)
+
+with open('wormshape_hdresults.pkl', 'wb') as file:
+    pickle.dump(fframe_analysis, file)
+
 # Visualize the results
-visualize_worm_analysis(results)
+visualize_worm_analysis(fframe_analysis)
+
+
+def visualize_head_localization(analysis_results, frame_num, figure_name):
+    """
+    Visualize the head localization for a specific frame.
+    
+    Parameters:
+    - analysis_results: The output dictionary from analyze_video function
+    - frame_num: The frame number to visualize
+    - figure_name: Name of the file to save the figure
+    """
+    # Extract necessary data
+    #segmentation_dict = analysis_results['segmentation_dict']
+    smooth_points = analysis_results['smooth_points'][frame_num]
+    head_positions = analysis_results['head_positions']
+    
+    # Flip x, y coordinates
+    smooth_points = smooth_points[:, ::-1]
+    
+    # Get the segmentation mask for the specified frame
+    mask = analysis_results['masks'][frame_num]
+    
+    # Create the figure
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    # Plot the segmentation mask
+    ax.imshow(mask, cmap='gray', alpha=0.5)
+    
+    # Plot the skeleton
+    ax.plot(smooth_points[:, 1], smooth_points[:, 0], 'b-', linewidth=2, alpha=0.7)
+    
+    # Highlight the head position
+    head_index = head_positions[frame_num]
+    #head_point = smooth_points[0] if head_index == 0 else smooth_points[-1]
+    head_point=head_index
+    ax.plot(head_point[0], head_point[1], 'ro', markersize=1, label='Head')
+    
+    # Set title and labels
+    ax.set_title(f'Frame {frame_num}: Head Localization')
+    ax.set_xlabel('Y coordinate')
+    ax.set_ylabel('X coordinate')
+    
+    # Add legend
+    ax.legend()
+    
+    # Remove axis ticks for cleaner look
+    ax.set_xticks([])
+    ax.set_yticks([])
+    
+    # Save the figure
+    plt.savefig(figure_name, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"Figure saved as {figure_name}")
 
 
 
+visualize_head_localization(fframe_analysis, frame_num=26, figure_name='head_localization_frame.png')
 
+
+data = np.array(fframe_analysis["head_positions"])
+x = data[:, 0]
+y = data[:, 1]
+
+# Create the scatter plot
+plt.figure(figsize=(12, 8))
+plt.scatter(x, y, alpha=0.5)
+plt.title('Head Positions')
+plt.xlabel('X Coordinate')
+plt.ylabel('Y Coordinate')
+
+# Invert y-axis to match image coordinates (0,0 at top-left)
+plt.gca().invert_yaxis()
+
+# Add grid for better readability
+plt.grid(True, linestyle='--', alpha=0.7)
+
+# Show the plot
+plt.show()
+plt.savefig('head_positions_scatter.png', dpi=300, bbox_inches='tight')
+plt.close()
 
 ###Stuff###
 
