@@ -110,7 +110,7 @@ _, out_obj_ids, out_mask_logits = predictor.add_new_points(
     labels=labels,
 )
 
-###Two clicks
+""" ###Two clicks
 points = np.array([[500, 1300], [400, 1000]], dtype=np.float32)
 # for labels, `1` means positive click and `0` means negative click
 labels = np.array([1, 0], np.int32)
@@ -120,7 +120,7 @@ _, out_obj_ids, out_mask_logits = predictor.add_new_points(
     obj_id=ann_obj_id,
     points=points,
     labels=labels,
-)
+) """
 
 # show the results on the current (interacted) frame
 plt.figure(figsize=(12, 8))
@@ -143,8 +143,8 @@ for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
     }
 
 #Save propagation results
-with open('propagation_cowz.pkl', 'wb') as file:
-    pickle.dump(video_segments, file)
+""" with open('propagation_cowz.pkl', 'wb') as file:
+    pickle.dump(video_segments, file) """
 
 with open('propagation_fixedcrop.pkl', 'wb') as file:
     pickle.dump(video_segments, file)
@@ -195,14 +195,14 @@ def overlay_mask_on_image(image_path, mask, color=(0, 255, 0), alpha=0.5):
     return overlaid_image
 
 # Prepare the video writer
-output_video_path = "cowzhead_segmentation_result.mp4"
+output_video_path = "swimcroptst.mp4"
 frame = cv2.imread(os.path.join(video_dir, frame_names[0]))
 #frame = cv2.imread(os.path.join(video_dir, "000000.jpg"))
 if frame is None:
     raise ValueError(f"Could not read first frame from {os.path.join(video_dir, frame_names[0])}")
 height, width, _ = frame.shape
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-out = cv2.VideoWriter(output_video_path, fourcc, 29.90, (width, height))
+out = cv2.VideoWriter(output_video_path, fourcc, 10, (width, height))
 
 # Process each frame
 for frame_idx in range(len(frame_names)):

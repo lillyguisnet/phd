@@ -173,9 +173,11 @@ def get_hdsegmentation(ffvideo_segments, crop_size=94):
 
     return hd_video_segments
 
+#Check stuff
 predimg = hd_video_segments[500][1][0].astype(int)
 cv2.imwrite("tst.jpg", predimg*200)
 
+#Use
 hd_video_segments = get_hdsegmentation(ffvideo_segments, crop_size=94)
 
 with open('hd_video_segments.pkl', 'wb') as file:

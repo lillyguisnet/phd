@@ -31,7 +31,7 @@ sys.path.append("/home/maxime/prg/phd/segment-anything-2")
 from sam2.build_sam import build_sam2_video_predictor
 
 
-
+#####SAM#####
 def show_mask(mask, ax, obj_id=None, random_color=False):
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)

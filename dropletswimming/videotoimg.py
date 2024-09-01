@@ -36,8 +36,12 @@ def process_video_for_sam2(video_path, output_dir, fps=None, max_dimension=None,
     if not is_readable:
         raise ValueError(f"Cannot process video: {error_message}")
     
+    # Get the subfolder name of the video path
+    sub_folder_name = video_path.parent.name
     video_name = video_path.stem
-    video_output_dir = output_dir / video_name
+    # Create the new folder name
+    new_folder_name = f"{sub_folder_name}-{video_name}"
+    video_output_dir = output_dir / new_folder_name
     video_output_dir.mkdir(parents=True, exist_ok=True)
     
     cap = cv2.VideoCapture(str(video_path))
@@ -107,6 +111,7 @@ def process_video_for_sam2(video_path, output_dir, fps=None, max_dimension=None,
             cv2.imwrite(str(frame_path), frame)
         
         new_frames += 1
+        print(new_frames)
         return str(frame_path)
     
     if force_reprocess:
@@ -149,29 +154,32 @@ def process_video_for_sam2(video_path, output_dir, fps=None, max_dimension=None,
         'existing_frames': existing_frames_count
     }
 
-# Example usage
-video_path = "/home/maxime/prg/phd/cowz.mp4"
-output_dir = "/home/maxime/prg/phd/crawlingtracking/tstvideo_tojpg/cowz"
+def process_video(video_path, output_dir):
+    try:
+        frame_paths, video_height, video_width, inconsistencies, frame_stats = process_video_for_sam2(
+            video_path, output_dir, output_format='jpg')
 
-print("Supported video extensions:", get_supported_video_extensions())
+        print(f"Frame processing summary:")
+        print(f"- New frames: {frame_stats['new_frames']}")
+        print(f"- Converted frames: {frame_stats['converted_frames']}")
+        print(f"- Existing frames (unchanged): {frame_stats['existing_frames']}")
+        print(f"Total frames: {len(frame_paths)}")
+        print(f"Video dimensions: {video_width}x{video_height}")
+        print(f"Frames saved in: {Path(output_dir) / Path(video_path).stem}")
+        if inconsistencies:
+            print("Inconsistencies found:")
+            for inc in inconsistencies:
+                print(f"- {inc}")
+        else:
+            print("No inconsistencies found.")
+    
+    except ValueError as e:
+        print(f"Error processing video: {e}")
 
-try:
-    frame_paths, video_height, video_width, inconsistencies, frame_stats = process_video_for_sam2(
-        video_path, output_dir, output_format='jpg')
 
-    print(f"Frame processing summary:")
-    print(f"- New frames: {frame_stats['new_frames']}")
-    print(f"- Converted frames: {frame_stats['converted_frames']}")
-    print(f"- Existing frames (unchanged): {frame_stats['existing_frames']}")
-    print(f"Total frames: {len(frame_paths)}")
-    print(f"Video dimensions: {video_width}x{video_height}")
-    print(f"Frames saved in: {Path(output_dir) / Path(video_path).stem}")
-    if inconsistencies:
-        print("Inconsistencies found:")
-        for inc in inconsistencies:
-            print(f"- {inc}")
-    else:
-        print("No inconsistencies found.")
-except ValueError as e:
-    print(f"Error processing video: {e}")
+video_path = "/home/maxime/prg/phd/dropletswimming/data_original/ngm/a-02182022162408-0000.avi"
+output_dir = "/home/maxime/prg/phd/dropletswimming/data_foranalysis/ngm"
 
+process_video(video_path, output_dir)
+
+###NGM###

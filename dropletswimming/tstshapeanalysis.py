@@ -14,12 +14,10 @@ from scipy.signal import find_peaks
 from scipy.signal import savgol_filter
 from scipy.signal import stft
 from scipy.signal import welch, find_peaks
+from scipy.spatial.distance import cdist
 import os
 
-with open('propagation_fixedcrop.pkl', 'rb') as file:
-    video_segments = pickle.load(file)
-
-with open('hd_video_segments.pkl', 'rb') as file:
+with open('tstswimcrop.pkl', 'rb') as file:
     hd_video_segments = pickle.load(file)
 
 def smooth_metric(data, window_length=11, poly_order=3):
@@ -472,6 +470,178 @@ def analyze_video(segmentation_dict, fps=10, window_size=5, overlap=2.5):
 
 
 
+def find_endpoints_and_junctions(skeleton):
+    points = np.transpose(np.nonzero(skeleton))
+    neighbors = np.sum([skeleton[p[0]-1:p[0]+2, p[1]-1:p[1]+2] for p in points], axis=(1,2))
+    endpoints = points[neighbors == 2]
+    junctions = points[neighbors > 3]
+    return endpoints, junctions
+
+def calculate_angle(p1, p2, p3):
+    v1 = p1 - p2
+    v2 = p3 - p2
+    angle = np.arccos(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+    return np.degrees(angle)
+
+def find_segment_endpoints(segment):
+    distances = cdist(segment, segment)
+    i, j = np.unravel_index(distances.argmax(), distances.shape)
+    return segment[i], segment[j]
+
+def find_furthest_endpoints_along_skeleton(skeleton):
+    # Find all endpoints
+    endpoints, _ = find_endpoints_and_junctions(skeleton)
+    
+    if len(endpoints) < 2:
+        return None  # Not enough endpoints
+    
+    # Create a graph from the skeleton
+    g = graph.pixel_graph(skeleton)
+    
+    max_distance = 0
+    furthest_pair = None
+    
+    # Check all pairs of endpoints
+    for i in range(len(endpoints)):
+        for j in range(i+1, len(endpoints)):
+            path = graph.shortest_path(g, tuple(endpoints[i]), tuple(endpoints[j]))
+            distance = len(path)  # The length of the path is the distance along the skeleton
+            
+            if distance > max_distance:
+                max_distance = distance
+                furthest_pair = (endpoints[i], endpoints[j])
+    
+    return furthest_pair
+
+def adjust_self_touching_skeleton(skeleton):
+    endpoints, junctions = find_endpoints_and_junctions(skeleton)
+    
+    if len(junctions) > 0:
+        # Remove junctions
+        for junction in junctions:
+            skeleton[junction[0], junction[1]] = 0
+        
+        # Find all segments
+        labeled_skeleton, num_segments = morphology.label(skeleton, connectivity=2, return_num=True)
+        segments = [np.argwhere(labeled_skeleton == i) for i in range(1, num_segments+1)]
+        
+        while len(segments) > 1:
+            # Find endpoints of all segments
+            segment_endpoints = [find_segment_endpoints(seg) for seg in segments]
+            
+            # Calculate distances between all pairs of endpoints
+            all_endpoints = np.vstack(segment_endpoints)
+            distances = cdist(all_endpoints, all_endpoints)
+            np.fill_diagonal(distances, np.inf)
+            
+            connected = False
+            while not connected:
+                # Find the closest pair of endpoints
+                i, j = np.unravel_index(distances.argmin(), distances.shape)
+                p1, p2 = all_endpoints[i], all_endpoints[j]
+                
+                # Find which segments these endpoints belong to
+                seg1_idx = i // 2
+                seg2_idx = j // 2
+                
+                if seg1_idx != seg2_idx:  # Ensure we're connecting different segments
+                    # Check the angle
+                    seg1, seg2 = segments[seg1_idx], segments[seg2_idx]
+                    idx1 = np.where((seg1 == p1).all(axis=1))[0][0]
+                    idx2 = np.where((seg2 == p2).all(axis=1))[0][0]
+                    
+                    if idx1 in [0, len(seg1)-1] and idx2 in [0, len(seg2)-1]:
+                        # Ensure we have enough points to calculate angle
+                        if len(seg1) > 2 and len(seg2) > 2:
+                            p1_neighbor = seg1[1] if idx1 == 0 else seg1[-2]
+                            p2_neighbor = seg2[1] if idx2 == 0 else seg2[-2]
+                            angle = calculate_angle(p1_neighbor, p1, p2_neighbor)
+                            
+                            if angle >= 90:
+                                # Accept this connection
+                                rr, cc = draw.line(p1[0], p1[1], p2[0], p2[1])
+                                skeleton[rr, cc] = 1
+                                
+                                # Merge connected segments
+                                merged_segment = np.vstack((seg1, seg2))
+                                segments = [seg for k, seg in enumerate(segments) if k not in [seg1_idx, seg2_idx]]
+                                segments.append(merged_segment)
+                                
+                                connected = True
+                            else:
+                                # Reject this connection and try the next closest pair
+                                distances[i, j] = distances[j, i] = np.inf
+                        else:
+                            # If segments are too short, connect them anyway
+                            rr, cc = draw.line(p1[0], p1[1], p2[0], p2[1])
+                            skeleton[rr, cc] = 1
+                            
+                            merged_segment = np.vstack((seg1, seg2))
+                            segments = [seg for k, seg in enumerate(segments) if k not in [seg1_idx, seg2_idx]]
+                            segments.append(merged_segment)
+                            
+                            connected = True
+                    else:
+                        # If we're not connecting endpoints, try the next closest pair
+                        distances[i, j] = distances[j, i] = np.inf
+                else:
+                    # If we're trying to connect endpoints of the same segment, try the next closest pair
+                    distances[i, j] = distances[j, i] = np.inf
+    
+    # Ensure exactly two endpoints
+    endpoints, _ = find_endpoints_and_junctions(skeleton)
+    if len(endpoints) > 2:
+        furthest_pair = find_furthest_endpoints_along_skeleton(skeleton)
+        if furthest_pair:
+            g = graph.pixel_graph(skeleton)
+            path = graph.shortest_path(g, tuple(furthest_pair[0]), tuple(furthest_pair[1]))
+            
+            new_skeleton = np.zeros_like(skeleton)
+            for point in path:
+                new_skeleton[point] = 1
+            
+            return new_skeleton
+    
+    return skeleton
+
+
+adjusted_skeleton = adjust_self_touching_skeleton(skeleton)
+
+
+plt.figure(figsize=(10, 6))
+plt.plot(smooth_points[:, 0], smooth_points[:, 1], 'b-')
+plt.scatter(smooth_points[:, 0], smooth_points[:, 1], c='r', s=20)
+plt.title('Smooth Points Visualization')
+plt.xlabel('X Coordinate')
+plt.ylabel('Y Coordinate')
+plt.grid(True)
+plt.show()
+plt.savefig('skeleton.png')
+plt.close()
+
+
+def coordinates_to_bool_array(coordinates, shape=(100, 100)):
+    # Create an empty boolean array filled with False
+    bool_array = np.zeros(shape, dtype=bool)
+    
+    # Round the coordinates to integers
+    rounded_coords = np.round(coordinates).astype(int)
+    
+    # Clip the coordinates to ensure they're within the array bounds
+    rounded_coords = np.clip(rounded_coords, 0, np.array(shape) - 1)
+    
+    # Set the corresponding pixels to True
+    bool_array[rounded_coords[:, 1], rounded_coords[:, 0]] = True
+    
+    return bool_array
+
+result = coordinates_to_bool_array(junctions)
+
+image_array = np.uint8(skeleton * 255)
+image = Image.fromarray(image_array)
+image.save('skeleton.png')
+
+
 def visualize_worm_analysis(results):
     frames = results['frames']
     fps = results['fps']
@@ -638,449 +808,4 @@ fframe_analysis = analyze_video(hd_video_segments)
 with open('wormshape_hdresults.pkl', 'wb') as file:
     pickle.dump(fframe_analysis, file)
 
-
-
-
-### Visualize the results
-visualize_worm_analysis(fframe_analysis)
-
-
-
-
-
-def visualize_head_localization(analysis_results, frame_num, figure_name):
-    """
-    Visualize the head localization for a specific frame.
-    
-    Parameters:
-    - analysis_results: The output dictionary from analyze_video function
-    - frame_num: The frame number to visualize
-    - figure_name: Name of the file to save the figure
-    """
-    # Extract necessary data
-    #segmentation_dict = analysis_results['segmentation_dict']
-    smooth_points = analysis_results['smooth_points'][frame_num]
-    head_positions = analysis_results['head_positions']
-    
-    # Flip x, y coordinates
-    smooth_points = smooth_points[:, ::-1]
-    
-    # Get the segmentation mask for the specified frame
-    mask = analysis_results['masks'][frame_num]
-    
-    # Create the figure
-    fig, ax = plt.subplots(figsize=(10, 10))
-    
-    # Plot the segmentation mask
-    ax.imshow(mask, cmap='gray', alpha=0.5)
-    
-    # Plot the skeleton
-    ax.plot(smooth_points[:, 1], smooth_points[:, 0], 'b-', linewidth=2, alpha=0.7)
-    
-    # Highlight the head position
-    head_index = head_positions[frame_num]
-    #head_point = smooth_points[0] if head_index == 0 else smooth_points[-1]
-    head_point=head_index
-    ax.plot(head_point[0], head_point[1], 'ro', markersize=1, label='Head')
-    
-    # Set title and labels
-    ax.set_title(f'Frame {frame_num}: Head Localization')
-    ax.set_xlabel('Y coordinate')
-    ax.set_ylabel('X coordinate')
-    
-    # Add legend
-    ax.legend()
-    
-    # Remove axis ticks for cleaner look
-    ax.set_xticks([])
-    ax.set_yticks([])
-    
-    # Save the figure
-    plt.savefig(figure_name, dpi=300, bbox_inches='tight')
-    plt.close()
-
-    print(f"Figure saved as {figure_name}")
-
-
-
-visualize_head_localization(fframe_analysis, frame_num=26, figure_name='head_localization_frame.png')
-
-
-data = np.array(fframe_analysis["head_positions"])
-x = data[:, 0]
-y = data[:, 1]
-
-# Create the scatter plot
-plt.figure(figsize=(12, 8))
-plt.scatter(x, y, alpha=0.5)
-plt.title('Head Positions')
-plt.xlabel('X Coordinate')
-plt.ylabel('Y Coordinate')
-
-# Invert y-axis to match image coordinates (0,0 at top-left)
-plt.gca().invert_yaxis()
-
-# Add grid for better readability
-plt.grid(True, linestyle='--', alpha=0.7)
-
-# Show the plot
-plt.show()
-plt.savefig('head_positions_scatter.png', dpi=300, bbox_inches='tight')
-plt.close()
-
-###Old ftuff###
-
-
-""" def analyze_video(segmentation_dict, fps=10, window_size=5, overlap=2.5):
-    results = []
-    curvature_time_series = []
-    
-    # First pass to get endpoints
-    for frame_num, frame_data in segmentation_dict.items():
-        print(f"Processing frame {frame_num}")
-        mask = frame_data[1][0]
-        cleaned_mask = clean_mask(mask)
-        skeleton = get_skeleton(cleaned_mask)
-        
-        frame_results = analyze_shape(skeleton, frame_num, None)
-        results.append(frame_results)
-        curvature_time_series.append(np.mean(frame_results['curvature']))
-
-    # Identify head
-    endpoints = track_endpoints(results)
-    head_index = identify_head(endpoints)
-
-    # Second pass with head information
-    results = []
-    for frame_num, frame_data in segmentation_dict.items():
-        print(f"Processing frame {frame_num}")
-        mask = frame_data[1][0]
-        cleaned_mask = clean_mask(mask)
-        skeleton = get_skeleton(cleaned_mask)
-        
-        frame_results = analyze_shape(skeleton, frame_num, head_index)
-        results.append(frame_results)
-        curvature_time_series.append(np.mean(frame_results['curvature']))
-
-    
-    # Temporal frequency analysis
-    curvature_1d = np.array(curvature_time_series)
-    curvature_1d = (curvature_1d - np.mean(curvature_1d)) / np.std(curvature_1d)
-    
-    nperseg = int(window_size * fps)
-    noverlap = int(overlap * fps)
-    
-    dominant_freqs = []
-    time_points = []
-    for i in range(0, len(curvature_1d) - nperseg, nperseg - noverlap):
-        segment = curvature_1d[i:i+nperseg]
-        f_segment, psd_segment = welch(segment, fs=fps, nperseg=nperseg, noverlap=noverlap)
-        peaks, _ = find_peaks(psd_segment, height=np.max(psd_segment) * 0.1)
-        if len(peaks) > 0:
-            dominant_freq_idx = peaks[np.argmax(psd_segment[peaks])]
-            dominant_freqs.append(f_segment[dominant_freq_idx])
-        else:
-            dominant_freqs.append(0)
-        time_points.append(i / fps)
-    
-    # Interpolate dominant frequencies for all frames
-    frame_numbers = np.arange(len(results))
-    interpolated_freqs = np.interp(frame_numbers / fps, time_points, dominant_freqs)
-    
-    # Add temporal frequency to results and apply smoothing
-    smoothed_results = []
-    for i, result in enumerate(results):
-        smoothed_result = result.copy()
-        smoothed_result['dominant_temporal_freq'] = interpolated_freqs[i]
-        for metric in ['max_amplitude', 'avg_amplitude', 'wavelength', 'worm_length', 'wave_number', 'normalized_wavelength']:
-            if metric in result:
-                smoothed_result[f'smoothed_{metric}'] = result[metric]
-        smoothed_results.append(smoothed_result)
-    
-    # Apply smoothing after collecting all results
-    for metric in ['max_amplitude', 'avg_amplitude', 'wavelength', 'worm_length', 'wave_number', 'normalized_wavelength']:
-        data = [r[metric] for r in results if metric in r]
-        if data:
-            smoothed_data = smooth_metric(data)
-            for i, result in enumerate(smoothed_results):
-                if i < len(smoothed_data):
-                    result[f'smoothed_{metric}'] = smoothed_data[i]
-
-    # Add smoothing for head bends
-    head_bends = [r['head_bend'] for r in results]
-    smoothed_head_bends = smooth_metric(head_bends)
-    for i, result in enumerate(smoothed_results):
-        result['smoothed_head_bend'] = smoothed_head_bends[i]
-    
-    return smoothed_results, frame_numbers, interpolated_freqs """
-
-
-
-def analyze_head_bends(smoothed_results):
-    head_bends = [r['smoothed_head_bend'] for r in smoothed_results]
-    
-    # Find peaks (deep bends)
-    peaks, _ = find_peaks(np.abs(head_bends), height=np.std(head_bends))
-    
-    # Calculate metrics
-    num_bends = len(peaks)
-    avg_bend_depth = np.mean(np.abs(np.array(head_bends)[peaks]))
-    max_bend_depth = np.max(np.abs(np.array(head_bends)[peaks]))
-    
-    return {
-        'num_bends': num_bends,
-        'avg_bend_depth': avg_bend_depth,
-        'max_bend_depth': max_bend_depth
-    }
-
-# After running analyze_video
-head_bend_analysis = analyze_head_bends(video_analysis)
-
-
-def visualize_head_bends(results, smoothed_results, fps=10):
-    # Extract frame numbers and bend angles
-    frames = [r['frame'] for r in results]
-    times = [f / fps for f in frames]  # Convert frames to seconds
-    raw_bends = [r['head_bend'] for r in results]
-    smoothed_bends = [r['smoothed_head_bend'] for r in smoothed_results]
-
-    # Find peaks and troughs
-    peak_threshold = np.std(smoothed_bends)/3
-    peaks, _ = find_peaks(smoothed_bends, prominence=peak_threshold, distance=8)
-    troughs, _ = find_peaks(-np.array(smoothed_bends), prominence=peak_threshold, distance=8)
-
-    # Create figure with two subplots
-    fig = plt.figure(figsize=(15, 10))
-    gs = GridSpec(2, 1, height_ratios=[3, 1])  # Main plot and residual plot
-
-    # Main plot
-    ax1 = fig.add_subplot(gs[0])
-    ax1.plot(times, raw_bends, alpha=0.5, label='Raw data', color='lightblue')
-    ax1.plot(times, smoothed_bends, label='Smoothed data', color='darkblue')
-    
-    # Add peaks and troughs to the plot
-    ax1.scatter([times[i] for i in peaks], [smoothed_bends[i] for i in peaks], 
-                color='red', s=50, label='Peaks', zorder=5)
-    ax1.scatter([times[i] for i in troughs], [smoothed_bends[i] for i in troughs], 
-                color='green', s=50, label='Troughs', zorder=5)
-
-    ax1.set_ylabel('Head Bend Angle (degrees)')
-    ax1.set_title('Worm Head Bends Over Time')
-    ax1.legend()
-    ax1.grid(True, which='both', linestyle='--', linewidth=0.5)
-
-    # Annotate some peaks and troughs
-    for i, peak in enumerate(peaks[:5]):  # Annotate first 5 peaks
-        ax1.annotate(f'P{i+1}', (times[peak], smoothed_bends[peak]), 
-                     xytext=(5, 5), textcoords='offset points')
-    for i, trough in enumerate(troughs[:5]):  # Annotate first 5 troughs
-        ax1.annotate(f'T{i+1}', (times[trough], smoothed_bends[trough]), 
-                     xytext=(5, -15), textcoords='offset points')
-
-    # Residual plot
-    ax2 = fig.add_subplot(gs[1], sharex=ax1)
-    residuals = np.array(raw_bends) - np.array(smoothed_bends)
-    ax2.plot(times, residuals, color='gray', alpha=0.7)
-    ax2.fill_between(times, residuals, 0, color='gray', alpha=0.3)
-    ax2.set_ylabel('Residuals')
-    ax2.set_xlabel('Time (seconds)')
-    ax2.grid(True, which='both', linestyle='--', linewidth=0.5)
-
-    # Adjust layout and display
-    plt.tight_layout()
-    plt.show()
-    plt.savefig('headbends.png', dpi=300, bbox_inches='tight')
-    plt.close()
-
-    # Additional analysis
-    analyze_head_bend_patterns(times, raw_bends, smoothed_bends, peaks, troughs)
-
-
-def analyze_head_bend_patterns(times, raw_bends, smoothed_bends, peaks, troughs):
-    # Calculate metrics
-    num_peaks = len(peaks)
-    num_troughs = len(troughs)
-    avg_peak_depth = np.mean(np.array(smoothed_bends)[peaks])
-    avg_trough_depth = np.mean(np.array(smoothed_bends)[troughs])
-    max_peak_depth = np.max(np.array(smoothed_bends)[peaks])
-    max_trough_depth = np.min(np.array(smoothed_bends)[troughs])
-    
-    # Calculate bending frequency
-    all_extrema = sorted(np.concatenate([peaks, troughs]))
-    if len(all_extrema) > 1:
-        extrema_times = np.array(times)[all_extrema]
-        bend_intervals = np.diff(extrema_times)
-        avg_bend_frequency = 1 / np.mean(bend_intervals)
-    else:
-        avg_bend_frequency = 0
-
-    print(f"Number of peaks: {num_peaks}")
-    print(f"Number of troughs: {num_troughs}")
-    print(f"Average peak depth: {avg_peak_depth:.2f} degrees")
-    print(f"Average trough depth: {avg_trough_depth:.2f} degrees")
-    print(f"Maximum peak depth: {max_peak_depth:.2f} degrees")
-    print(f"Maximum trough depth: {max_trough_depth:.2f} degrees")
-    print(f"Average bending frequency: {avg_bend_frequency:.2f} Hz")
-
-    # Perform FFT on smoothed data
-    fft = np.fft.fft(smoothed_bends)
-    freqs = np.fft.fftfreq(len(smoothed_bends), times[1] - times[0])
-    dominant_freq = freqs[np.argmax(np.abs(fft[1:]) + 1)]
-    
-    print(f"Dominant frequency from FFT: {dominant_freq:.2f} Hz")
-
-    # Plot FFT
-    plt.figure(figsize=(10, 4))
-    plt.plot(freqs[1:len(freqs)//2], np.abs(fft[1:len(fft)//2]))
-    plt.title('Frequency Spectrum of Head Bends')
-    plt.xlabel('Frequency (Hz)')
-    plt.ylabel('Magnitude')
-    plt.grid(True)
-    plt.show()
-    plt.savefig('headpatterns.png', dpi=300, bbox_inches='tight')
-    plt.close()
-
-
-
-
-
-smoothed_results, frame_numbers, interpolated_freqs = analyze_video(video_segments)
-visualize_head_bends(smoothed_results, smoothed_results)
-
-visualize_worm_metrics(video_analysis, frame_numbers, interpolated_freqs, f, psd, start_frame=0, end_frame=None, sample_rate=1, fps=10)
-
-
-
-def visualize_frame_analysis(video_analysis, frame_number):
-    # Find the data for the specified frame
-    frame_data = next((data for data in video_analysis if data['frame'] == frame_number), None)
-    
-    if frame_data is None:
-        print(f"No data found for frame {frame_number}")
-        return
-
-    fig, axs = plt.subplots(1, 2, figsize=(20, 10))
-    fig.suptitle(f'Frame {frame_number}: Curvature Analysis', fontsize=16)
-
-    # Custom colormap: blue (low curvature) to red (high curvature)
-    colors = ['blue', 'cyan', 'yellow', 'red']
-    n_bins = 100
-    cmap = LinearSegmentedColormap.from_list('custom', colors, N=n_bins)
-
-    # Plot snake shape with curvature color
-    ax = axs[0]
-    scatter = ax.scatter(frame_data['smooth_points'][:, 0], frame_data['smooth_points'][:, 1], 
-                         c=frame_data['curvature'], cmap=cmap)
-    ax.set_title('Snake Shape with Curvature')
-    ax.set_aspect('equal', 'box')
-    ax.invert_yaxis()  # Invert y-axis to match image coordinates
-    fig.colorbar(scatter, ax=ax)
-
-    # Add text annotations for straightness and dominant frequency
-    ax.text(0.05, 0.95, f"Straightness: {frame_data['straightness']:.4f}", 
-            transform=ax.transAxes, verticalalignment='top')
-    ax.text(0.05, 0.90, f"Dominant Frequency: {frame_data['dominant_freq']:.4f}", 
-            transform=ax.transAxes, verticalalignment='top')
-
-    # Plot curvature along the snake's length
-    ax = axs[1]
-    ax.plot(frame_data['curvature'])
-    ax.set_title('Curvature Along Snake Length')
-    ax.set_xlabel('Point Index')
-    ax.set_ylabel('Curvature')
-
-    plt.tight_layout()
-    plt.savefig(f'frame_{frame_number}_analysis.png')
-    plt.close()
-
-visualize_frame_analysis(video_analysis, 0)
-frames_to_visualize = [0, 250, 299, 599]  # Example frame numbers
-for frame in frames_to_visualize:
-    visualize_frame_analysis(video_analysis, frame)
-
-##Check stuff
-video_segments[41][1][0]
-mask = video_segments[100][1][0]
-cleaned_mask = clean_mask(mask)
-skeleton = get_skeleton(cleaned_mask)
-skeleton
-image_size = (94, 94)  # Assuming a grid of 80x80
-image = np.zeros(image_size, dtype=np.uint8)
-# Set the coordinates in the array to white
-for coord in smooth_points_int:
-    image[coord[0], coord[1]] = 255
-plt.imshow(image, cmap='gray', interpolation='nearest')
-plt.axis('off')  # Turn off the axis labels
-plt.savefig('smooth.png', bbox_inches='tight', pad_inches=0)
-plt.close()
-
-# Visualization
-def visualize_frame(frame_data, original_image=None, mask=None):
-    fig = plt.figure(figsize=(15, 10))
-    
-    # Original image with skeleton overlay
-    ax1 = fig.add_subplot(221)
-    if original_image is not None:
-        ax1.imshow(original_image, cmap='gray')
-    ax1.plot(frame_data['smooth_points'][:, 1], frame_data['smooth_points'][:, 0], 'r-')
-    ax1.set_title(f"Frame {frame_data['frame']}")
-    ax1.set_xlabel("X coordinate")
-    ax1.set_ylabel("Y coordinate")
-
-    # Mask
-    ax2 = fig.add_subplot(222)
-    if mask is not None:
-        ax2.imshow(mask, cmap='binary')
-    ax2.set_title("Segmentation Mask")
-    ax2.set_xlabel("X coordinate")
-    ax2.set_ylabel("Y coordinate")
-
-    # Curvature along the body
-    ax3 = fig.add_subplot(223)
-    im = ax3.imshow(frame_data['curvature'].reshape(-1, 1), aspect='auto', cmap='viridis')
-    ax3.set_title("Curvature along the body")
-    ax3.set_xlabel("Position along the body")
-    ax3.set_ylabel("Curvature")
-    plt.colorbar(im, ax=ax3)
-
-    # Metrics
-    ax4 = fig.add_subplot(224)
-    metrics = [
-        f"Straightness: {frame_data['straightness']:.3f}",
-        f"Dominant frequency: {frame_data['dominant_freq']:.3f}",
-        f"Max curvature: {np.max(frame_data['curvature']):.3f}",
-        f"Mean curvature: {np.mean(frame_data['curvature']):.3f}"
-    ]
-    ax4.axis('off')
-    ax4.text(0.5, 0.5, '\n'.join(metrics), ha='center', va='center', fontsize=12)
-
-    plt.tight_layout()
-    plt.savefig(f'frame_{frame_data["frame"]}_analysis.png', bbox_inches='tight', dpi=300)
-    plt.close()
-
-# Visualize a specific frame (e.g., frame 100)
-frame_num = 250
-mask = clean_mask(video_segments[frame_num][1][0])
-visualize_frame(video_analysis[frame_num], mask=mask)
-
-# Plot shape metrics over time
-frames = [data['frame'] for data in video_analysis]
-straightness = [data['straightness'] for data in video_analysis]
-dominant_freq = [data['dominant_freq'] for data in video_analysis]
-
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-ax1.plot(frames, straightness)
-ax1.set_title("Straightness over time")
-ax1.set_xlabel("Frame")
-ax1.set_ylabel("Straightness")
-
-ax2.plot(frames, dominant_freq)
-ax2.set_title("Dominant frequency over time")
-ax2.set_xlabel("Frame")
-ax2.set_ylabel("Frequency")
-
-plt.tight_layout()
-plt.show()
-plt.savefig('ftime.png', bbox_inches='tight', dpi=300)
-plt.close()
 
