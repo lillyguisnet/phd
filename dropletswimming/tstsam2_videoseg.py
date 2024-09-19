@@ -44,7 +44,7 @@ def show_points(coords, labels, ax, marker_size=200):
     ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)   
 
 
-video_dir = "/home/maxime/prg/phd/dropletswimming/data_foranalysis/ngm/ngm-a-02182022162408-0000"
+video_dir = "/home/maxime/prg/phd/dropletswimming/data_foranalysis/ngm/ngm-a-02212022161253-0000"
 
 # scan all the png frame names in this directory
 frame_names = [
@@ -70,7 +70,7 @@ inference_state = predictor.init_state(video_path=video_dir)
 ann_frame_idx = 0  # the frame index we interact with
 ann_obj_id = 1  # give a unique id to each object we interact with (it can be any integers)
 
-points = np.array([[1150, 1180]], dtype=np.float32) #full frame
+points = np.array([[1462, 1449]], dtype=np.float32) #full frame
 
 labels = np.array([1], np.int32)
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -95,6 +95,23 @@ for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
         out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
         for i, out_obj_id in enumerate(out_obj_ids)
     }
+
+
+""" video_segments = {}  # video_segments contains the per-frame segmentation results
+for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=ann_frame_idx, reverse=True):
+    video_segments[out_frame_idx] = {
+        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+    for i, out_obj_id in enumerate(out_obj_ids)
+} """
+ 
+
+empty_frames = []
+for frame, obj_dict in video_segments.items():
+    if all(not mask.any() for mask in obj_dict.values()):
+        empty_frames.append(frame)
+if empty_frames:
+    print(f"!!! Empty frames: {empty_frames}")
+
 
 
 with open('fframe_swimtst.pkl', 'wb') as file:
@@ -139,7 +156,7 @@ def overlay_mask_on_image(image_path, mask, color=(0, 255, 0), alpha=0.5):
 
 
 # Prepare the video writer
-output_video_path = "ffswimtst.mp4"
+output_video_path = "cropreversetst.mp4"
 frame = cv2.imread(os.path.join(video_dir, frame_names[0]))
 #frame = cv2.imread(os.path.join(video_dir, "000000.jpg"))
 if frame is None:

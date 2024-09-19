@@ -42,26 +42,6 @@ def clean_mask(mask):
 def get_skeleton(mask):
     return morphology.skeletonize(mask)
 
-""" def find_longest_path(skeleton):
-    points = np.argwhere(skeleton)
-    n = len(points)
-    distances = np.sqrt(np.sum((points[:, None, :] - points[None, :, :])**2, axis=-1))
-    adj_matrix = csr_matrix(np.where((distances <= np.sqrt(2)) & (distances > 0), distances, 0))
-    
-    dist_matrix = shortest_path(adj_matrix, directed=False, method='D')
-    i, j = np.unravel_index(dist_matrix.argmax(), dist_matrix.shape)
-    
-    path = []
-    predecessors = shortest_path(adj_matrix, directed=False, indices=i, return_predecessors=True)[1]
-    current = j
-    while current != i:
-        path.append(current)
-        current = predecessors[current]
-    path.append(i)
-    
-    return points[path[::-1]] """
-
-
 def find_endpoints_and_junctions(coords):
     if isinstance(coords, np.ndarray) and coords.dtype == bool:
         coords = np.argwhere(coords)
@@ -104,9 +84,6 @@ def find_furthest_endpoints_along_skeleton(skeleton):
     
     if len(endpoints) <= 2:
         return None  # Not enough endpoints
-    
-    # Create a graph from the skeleton
-    #g = graph.pixel_graph(skeleton)
     
     max_distance = 0
     furthest_pair = None
@@ -881,5 +858,44 @@ fframe_analysis = analyze_video(hd_video_segments)
 
 with open('wormshape_hdresults.pkl', 'wb') as file:
     pickle.dump(fframe_analysis, file)
+
+
+##h5 stuff
+
+import json
+from collections.abc import Mapping, Sequence
+import numpy as np
+
+def analyze_dict_structure(data, indent="", max_depth=None, current_depth=0):
+    if max_depth is not None and current_depth > max_depth:
+        return "..."
+
+    if isinstance(data, Mapping):
+        result = "{\n"
+        for key, value in data.items():
+            result += f"{indent}  {repr(key)}: {analyze_dict_structure(value, indent + '  ', max_depth, current_depth + 1)},\n"
+        result += indent + "}"
+        return result
+    elif isinstance(data, np.ndarray):
+        return f"ndarray(shape={data.shape}, dtype={data.dtype})"
+    elif isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+        if len(data) > 10:
+            sample = data[:3]
+            sample_str = ", ".join(str(analyze_dict_structure(item, indent + "  ", max_depth, current_depth + 1)) for item in sample)
+            return f"{type(data).__name__}(length={len(data)}, sample=[{sample_str}, ...])"
+        result = "[\n"
+        for item in data:
+            result += f"{indent}  {analyze_dict_structure(item, indent + '  ', max_depth, current_depth + 1)},\n"
+        result += indent + "]"
+        return result
+    else:
+        return f"{type(data).__name__}"
+
+def print_dict_structure(data, max_depth=None):
+    print(analyze_dict_structure(data, max_depth=max_depth))
+
+
+
+print_dict_structure(swim_shapeanalysis)
 
 
