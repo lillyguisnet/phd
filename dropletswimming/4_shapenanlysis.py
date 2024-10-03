@@ -759,8 +759,7 @@ def get_shapeanalysis_file(or_vid):
 
 
 
-or_vid = '/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022195635-0000.avi'
-
+or_vid = '/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022122501-0000.avi'
 
 swim_shapeanalysis = get_shapeanalysis_file(or_vid)
 
@@ -780,8 +779,20 @@ swim_shapeanalysis = get_shapeanalysis_file(or_vid)
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/b-03222022182050-0000.avi'
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/b-03252022113446-0000.avi'
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/b-03252022114209-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/b-03252022114730-0000.avi'
 
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022195635-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022200832-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022201347-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022115515-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120041-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120644-0000.avi'
+
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204030-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204518-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022205045-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121224-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121746-0000.avi'
 
 
 

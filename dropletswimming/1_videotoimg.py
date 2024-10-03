@@ -355,7 +355,7 @@ def process_video(video_path, output_dir):
 
 
 
-video_path = '/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022200832-0000.avi'
+video_path = '/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022122501-0000.avi'
 output_dir = "/home/maxime/prg/phd/dropletswimming/data_foranalysis/visc05" ###<------
 
 process_video(video_path, output_dir)
@@ -377,6 +377,19 @@ process_video(video_path, output_dir)
 
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022195635-0000.avi'
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022200832-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022201347-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022115515-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120041-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120644-0000.avi'
+
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204030-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204518-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022205045-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121224-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121746-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022122501-0000.avi'
+
+
 
 
 #List all videos in folder
@@ -392,15 +405,4 @@ for full_path in video_files:
 
 ###ALL visc05###
 
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022200832-0000.avi'
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022201347-0000.avi'
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022115515-0000.avi'
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120041-0000.avi'
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120644-0000.avi'
-
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204030-0000.avi'
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204518-0000.avi'
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022205045-0000.avi'
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121224-0000.avi'
-'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121746-0000.avi'
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022122501-0000.avi'

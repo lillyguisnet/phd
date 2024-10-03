@@ -179,12 +179,12 @@ def swim_hdsegmentation(video_dir, fframe_segments_file):
     inference_state = predictor.init_state(video_path=temp_cropdir)
 
     #Add click on prompt frame
-    ann_frame_idx = 300  #frame index [343, 533]
+    ann_frame_idx = 300  #frame index 
     ann_obj_id = 1  #object id
     if crop_size[0] == 110:
         points = np.array([[58, 54]], dtype=np.float32) #110x110 crop size
     else:
-        points = np.array([[343, 533]], dtype=np.float32) #800x800 crop size
+        points = np.array([[343, 533]], dtype=np.float32) #800x800 crop size [343, 533]
     labels = np.array([1], np.int32)
     _, out_obj_ids, out_mask_logits = predictor.add_new_points(
         inference_state=inference_state,
@@ -289,7 +289,7 @@ def get_swim_hdsegmentation(or_vid):
 
 
 
-or_vid = '/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022195635-0000.avi'
+or_vid = '/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022122501-0000.avi'
 
 video_segments, crop_size, save_name = get_swim_hdsegmentation(or_vid)
 
@@ -313,13 +313,24 @@ video_segments, crop_size, save_name = get_swim_hdsegmentation(or_vid)
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/b-03252022114730-0000.avi'
 
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022195635-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022200832-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022201347-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022115515-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120041-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120644-0000.avi'
 
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204030-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204518-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022205045-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121224-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121746-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022122501-0000.avi'
 
 
 
 from PIL import Image
 
-mask = video_segments[584][1][0]
+mask = video_segments[289][1][0]
 
 image_array = np.uint8(mask	 * 255)
 image = Image.fromarray(image_array)

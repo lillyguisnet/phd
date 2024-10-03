@@ -70,10 +70,10 @@ def segment_fframe_video_withaddedprompt(video_dir):
     points = np.array([[1150, 1175]], dtype=np.float32) #full frame
     labels = np.array([1], np.int32)
 
-    ann_frame_idx = 299  #frame index
-    ann_obj_id = 1  #object id
-    points = np.array([[1055, 945]], dtype=np.float32)
-    labels = np.array([1], np.int32)
+    #ann_frame_idx = 299  #frame index
+    #ann_obj_id = 1  #object id
+    #points = np.array([[645, 1000]], dtype=np.float32)
+    #labels = np.array([1], np.int32)
     _, out_obj_ids, out_mask_logits = predictor.add_new_points(
         inference_state=inference_state,
         frame_idx=ann_frame_idx,
@@ -135,7 +135,7 @@ def segment_fframe_video_withaddedprompt(video_dir):
 
 ###Do the segmentation
 
-or_vid = '/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022200832-0000.avi'
+or_vid = '/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022122501-0000.avi'
 
 #Get the video directory from the original video path
 or_vid_path = Path(or_vid)
@@ -164,8 +164,18 @@ video_segments = segment_fframe_video_withaddedprompt(video_dir)
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/b-03252022114730-0000.avi'
 
 '/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022195635-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022200832-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03222022201347-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022115515-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120041-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/c-03252022120644-0000.avi'
 
-
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204030-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022204518-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03222022205045-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121224-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022121746-0000.avi'
+'/home/maxime/prg/phd/dropletswimming/data_original/visc05/d-03252022122501-0000.avi'
 
 
 video_segments[0][1][0]
