@@ -403,32 +403,43 @@ print_movement_analysis_summary(analysis_results)
 
 
 
-def save_cleaned_segments_to_h5(cleaned_segments, output_filename):
+
+def save_cleaned_segments_to_h5(cleaned_segments, filename):
+    # Create the output filename
+    base_name = os.path.basename(filename)
+    name_without_ext = os.path.splitext(base_name)[0]
+    output_filename = f"/home/lilly/phd/ria/data_analyzed/cleaned_segments/{name_without_ext}_cleanedsegments.h5"
+    
+    # Ensure the directory exists
+    os.makedirs(os.path.dirname(output_filename), exist_ok=True)
+
     with h5py.File(output_filename, 'w') as f:
-        # Save attributes
         num_frames = len(cleaned_segments)
         f.attrs['num_frames'] = num_frames
-        f.attrs['object_ids'] = list(cleaned_segments[0].keys())  # Assuming all frames have the same object IDs
+        f.attrs['object_ids'] = list(cleaned_segments[0].keys())
 
-        # Create a group for masks
         masks_group = f.create_group('masks')
 
-        # Get mask shape from the first frame and first object
         first_frame = list(cleaned_segments.keys())[0]
         first_obj = list(cleaned_segments[first_frame].keys())[0]
-        mask_shape = cleaned_segments[first_frame][first_obj].shape[1:]  # Exclude the first dimension
+        mask_shape = cleaned_segments[first_frame][first_obj].shape
 
-        # Create datasets for each object ID
         for obj_id in cleaned_segments[first_frame].keys():
-            masks_group.create_dataset(str(obj_id), (num_frames, *mask_shape), dtype=bool)
+            masks_group.create_dataset(str(obj_id), (num_frames, *mask_shape), dtype=np.uint8)
 
-        # Iterate through frames and object IDs
-        for frame_idx, (frame, frame_data) in enumerate(cleaned_segments.items()):
+        # Sort frame indices to ensure consistent ordering
+        sorted_frames = sorted(cleaned_segments.keys())
+        
+        for idx, frame in enumerate(sorted_frames):
+            frame_data = cleaned_segments[frame]
             for obj_id, mask in frame_data.items():
-                # Save the mask data, removing the first dimension
-                masks_group[str(obj_id)][frame_idx] = mask[0]
+                masks_group[str(obj_id)][idx] = mask.astype(np.uint8) * 255
+            
+            # Debug print
+            print(f"Saving frame {frame} at index {idx}")
 
     print(f"Cleaned segments saved to {output_filename}")
+    return output_filename
 
 def load_cleaned_segments_from_h5(filename):
     cleaned_segments = {}
@@ -441,33 +452,65 @@ def load_cleaned_segments_from_h5(filename):
         for frame_idx in range(num_frames):
             frame_data = {}
             for obj_id in object_ids:
-                # Add back the first dimension (1, 110, 110)
-                mask = masks_group[str(obj_id)][frame_idx][np.newaxis, ...]
+                mask = (masks_group[str(obj_id)][frame_idx] > 0).astype(bool)
                 frame_data[obj_id] = mask
             
             cleaned_segments[frame_idx] = frame_data
+            
+            # Debug print
+            print(f"Loading frame {frame_idx}")
     
     print(f"Cleaned segments loaded from {filename}")
     return cleaned_segments
 
+def compare_cleaned_segments(original, loaded):
+    assert len(original) == len(loaded), "Number of frames doesn't match"
+    
+    # Sort frame indices for both original and loaded data
+    original_frames = sorted(original.keys())
+    loaded_frames = sorted(loaded.keys())
+    
+    for orig_frame, loaded_frame in zip(original_frames, loaded_frames):
+        assert original[orig_frame].keys() == loaded[loaded_frame].keys(), f"Object IDs don't match in frame {orig_frame}"
+        
+        for obj_id in original[orig_frame]:
+            original_mask = original[orig_frame][obj_id]
+            loaded_mask = loaded[loaded_frame][obj_id]
+            
+            if not np.array_equal(original_mask, loaded_mask):
+                print(f"Mismatch found in original frame {orig_frame}, loaded frame {loaded_frame}, object {obj_id}")
+                print(f"Original mask shape: {original_mask.shape}")
+                print(f"Loaded mask shape: {loaded_mask.shape}")
+                print(f"Original mask dtype: {original_mask.dtype}")
+                print(f"Loaded mask dtype: {loaded_mask.dtype}")
+                print(f"Number of True values in original: {np.sum(original_mask)}")
+                print(f"Number of True values in loaded: {np.sum(loaded_mask)}")
+                
+                diff_positions = np.where(original_mask != loaded_mask)
+                print(f"Number of differing positions: {len(diff_positions[0])}")
+                
+                if len(diff_positions[0]) > 0:
+                    print("First 5 differing positions:")
+                    for i in range(min(5, len(diff_positions[0]))):
+                        pos = tuple(dim[i] for dim in diff_positions)
+                        print(f"  Position {pos}: Original = {original_mask[pos]}, Loaded = {loaded_mask[pos]}")
+                
+                return False
+    
+    print("All masks match exactly!")
+    return True
+
 # Example usage:
-output_filename = '/home/lilly/phd/ria/data_analyzed/ria_segmentation/cleaned_segments.h5'
+filename = 'AG-MMH122_10s_20190830_04_crop_riasegmentation.h5'
 
 # Save the cleaned segments
-save_cleaned_segments_to_h5(cleaned_segments, output_filename)
+output_filename = save_cleaned_segments_to_h5(cleaned_segments, filename)
 
 # Load the cleaned segments
 loaded_segments = load_cleaned_segments_from_h5(output_filename)
 
-# Verify the loaded data
-print(f"Number of frames in loaded data: {len(loaded_segments)}")
-print(f"Object IDs in first frame of loaded data: {list(loaded_segments[0].keys())}")
-print(f"Shape of first mask in first frame of loaded data: {loaded_segments[0][2].shape}")
-
-
-
-
-
+# Perform detailed comparison
+compare_cleaned_segments(cleaned_segments, loaded_segments)
 
 
 
@@ -493,14 +536,14 @@ video_name = filename.split('_riasegmentation.h5')[0]
 image_folder = os.path.join(video_folder, video_name)
 
 
-frame = 23
-mask_id = 4
+frame = 611
+mask_id = 3
 
 # Load the original image
 original_image = load_original_image(frame, image_folder)
 
 # Get the mask
-mask = cleaned_segments[frame][mask_id][0]
+mask = loaded_segments[frame][mask_id][0]
 
 # Overlay the mask on the original image
 overlayed_image = overlay_mask_on_image(original_image, mask)
