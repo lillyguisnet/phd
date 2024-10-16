@@ -56,8 +56,134 @@ frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 
 inference_state = predictor.init_state(video_path=video_dir)
 
-
 prompts = {}
+
+
+#NRD
+ann_frame_idx = 0  #frame index
+ann_obj_id = 2  #object id
+#points = np.array([[277, 307]], dtype=np.float32) #full frame
+points = np.array([[67, 41]], dtype=np.float32) #cropped frame nrd only
+labels = np.array([1], np.int32)
+prompts[ann_obj_id] = points, labels
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+# show the results on the current (interacted) frame
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+for i, out_obj_id in enumerate(out_obj_ids):
+    show_points(*prompts[out_obj_id], plt.gca())
+    show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
+plt.savefig("tstclick.png")
+plt.close()
+
+
+#NRV
+ann_frame_idx = 0  # the frame index we interact with
+ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
+points = np.array([[47, 58], [46, 56], [45, 58]], dtype=np.float32) #cropped frame nrv only
+# for labels, `1` means positive click and `0` means negative click
+labels = np.array([1, 1, 1], np.int32)
+prompts[ann_obj_id] = points, labels
+# `add_new_points` returns masks for all objects added so far on this interacted frame
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+
+# show the results on the current (interacted) frame on all objects
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+for i, out_obj_id in enumerate(out_obj_ids):
+    show_points(*prompts[out_obj_id], plt.gca())
+    show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
+plt.savefig("tstclick.png")
+plt.close()
+
+
+#LOOP
+ann_frame_idx = 0  # the frame index we interact with
+ann_obj_id = 4  # give a unique id to each object we interact with (it can be any integers)
+points = np.array([[43, 72], [41, 73], [43, 70], [46, 63], [55, 48], [63, 41]], dtype=np.float32) #cropped frame loop only
+# for labels, `1` means positive click and `0` means negative click
+labels = np.array([1, 1, 1, 0, 0, 0], np.int32)
+prompts[ann_obj_id] = points, labels
+# `add_new_points` returns masks for all objects added so far on this interacted frame
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+
+# show the results on the current (interacted) frame on all objects
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+for i, out_obj_id in enumerate(out_obj_ids):
+    show_points(*prompts[out_obj_id], plt.gca())
+    show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
+plt.savefig("tstclick.png")
+plt.close()
+
+
+
+video_segments = {}  # video_segments contains the per-frame segmentation results
+for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
+#for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=ann_frame_idx, reverse=True):
+    video_segments[out_frame_idx] = {
+        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+    for i, out_obj_id in enumerate(out_obj_ids)
+}
+    
+
+empty_masks = {}
+low_detection_masks = {}
+high_detection_masks = {}
+for frame, mask_dict in video_segments.items():
+    for mask_id, mask in mask_dict.items():
+        mask_sum = mask.sum()        
+        if mask_sum == 0:
+            if frame not in empty_masks:
+                empty_masks[frame] = []
+            empty_masks[frame].append(mask_id)
+        elif mask_sum <= 200:
+            if frame not in low_detection_masks:
+                low_detection_masks[frame] = []
+            low_detection_masks[frame].append(mask_id)
+        elif mask_sum >= 5000:
+            if frame not in high_detection_masks:
+                high_detection_masks[frame] = []
+            high_detection_masks[frame].append(mask_id)
+def print_results(result_dict, condition):
+    if result_dict:
+        print(f"!!! Frames with masks {condition}:")
+        for frame, mask_ids in result_dict.items():
+            print(f"  Frame {frame}: Mask IDs {mask_ids}")
+    else:
+        print(f"Yay! No masks {condition} found, yay!")
+print_results(empty_masks, "that are empty")
+#print_results(low_detection_masks, "having 200 or fewer true elements")
+print_results(high_detection_masks, "having 5000 or more true elements")
+
+
+
+
+# region [add prompt within video]
 
 ann_frame_idx = 380  #frame index
 ann_obj_id = 2  #object id
@@ -157,30 +283,36 @@ for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
 }
     
 
-empty_frames = []
-low_detection_frames = []
-high_detection_frames = []
-for frame, obj_dict in video_segments.items():
-    if all(not mask.any() for mask in obj_dict.values()):
-        empty_frames.append(frame)
-    elif sum(mask.sum() for mask in obj_dict.values()) <= 200:
-        low_detection_frames.append(frame)    
-    elif sum(mask.sum() for mask in obj_dict.values()) >= 5000:
-        high_detection_frames.append(frame)   
-if empty_frames:
-    print(f"!!! Empty frames: {empty_frames}")
-else:
-    print("Yay! No empty frames found, yay!")
-if low_detection_frames:
-    print(f"!!! Frames with 200 or fewer true elements: {low_detection_frames}")
-else:
-    print("Yay! No frames with 200 or fewer true elements found, yay!")
-if high_detection_frames:
-    print(f"!!! Frames with 5000 or more true elements: {high_detection_frames}")
-else:
-    print("Yay! No frames with 5000 or more true elements found, yay!")
+empty_masks = {}
+low_detection_masks = {}
+high_detection_masks = {}
+for frame, mask_dict in video_segments.items():
+    for mask_id, mask in mask_dict.items():
+        mask_sum = mask.sum()        
+        if mask_sum == 0:
+            if frame not in empty_masks:
+                empty_masks[frame] = []
+            empty_masks[frame].append(mask_id)
+        elif mask_sum <= 200:
+            if frame not in low_detection_masks:
+                low_detection_masks[frame] = []
+            low_detection_masks[frame].append(mask_id)
+        elif mask_sum >= 5000:
+            if frame not in high_detection_masks:
+                high_detection_masks[frame] = []
+            high_detection_masks[frame].append(mask_id)
+def print_results(result_dict, condition):
+    if result_dict:
+        print(f"!!! Frames with masks {condition}:")
+        for frame, mask_ids in result_dict.items():
+            print(f"  Frame {frame}: Mask IDs {mask_ids}")
+    else:
+        print(f"Yay! No masks {condition} found, yay!")
+print_results(empty_masks, "that are empty")
+#print_results(low_detection_masks, "having 200 or fewer true elements")
+print_results(high_detection_masks, "having 5000 or more true elements")
 
-
+# endregion [add prompt within video]
 
 
 
@@ -193,7 +325,7 @@ with open('/home/maxime/prg/phd/dropletswimming/data_analyzed/fframe_segmentatio
 
 from PIL import Image
 
-mask = video_segments[4][1][0]
+mask = video_segments[4][2][0]
 
 image_array = np.uint8(mask	 * 255)
 image = Image.fromarray(image_array)
@@ -207,7 +339,27 @@ import numpy as np
 import os
 import torch
 
-def overlay_masks_on_image(image_path, masks, colors=None, alpha=0.5):
+# Predefined list of visually distinct colors
+COLORS = [
+    (255, 0, 0),    # Red
+    (0, 255, 0),    # Green
+    (0, 0, 255),    # Blue
+    (255, 0, 255),  # Magenta
+    (0, 255, 255),  # Cyan
+    (128, 0, 0),    # Maroon
+    (0, 128, 0),    # Dark Green
+    (0, 0, 128),    # Navy
+    (128, 128, 0),  # Olive
+    (128, 0, 128),  # Purple
+    (0, 128, 128),  # Teal
+    (255, 128, 0),  # Orange
+    (255, 0, 128),  # Deep Pink
+    (128, 255, 0),  # Lime
+    (255, 255, 0),  # Yellow	
+    (0, 255, 128)   # Spring Green
+]
+
+def overlay_masks_on_image(image_path, masks, colors, alpha=0.5):
     # Load the image
     image = cv2.imread(image_path)
     if image is None:
@@ -216,10 +368,6 @@ def overlay_masks_on_image(image_path, masks, colors=None, alpha=0.5):
     
     # Create a blank overlay
     overlay = np.zeros_like(image)
-    
-    # If colors are not provided, generate random colors
-    if colors is None:
-        colors = {mask_id: tuple(np.random.randint(0, 255, 3).tolist()) for mask_id in masks.keys()}
     
     # Process each mask
     for mask_id, mask in masks.items():
@@ -237,8 +385,10 @@ def overlay_masks_on_image(image_path, masks, colors=None, alpha=0.5):
         # Resize the mask to match the image dimensions
         mask_resized = cv2.resize(mask.astype(np.uint8), (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
         
-        # Create a colored mask
+        # Get the color for this mask
         color = colors[mask_id]
+        
+        # Create a colored mask
         colored_mask = np.zeros_like(image)
         colored_mask[mask_resized == 1] = color
         
@@ -251,7 +401,7 @@ def overlay_masks_on_image(image_path, masks, colors=None, alpha=0.5):
     return overlaid_image
 
 # Prepare the video writer
-output_video_path = "crop_multi.mp4"
+output_video_path = "crop_all_heavypromptsf0.mp4"
 frame = cv2.imread(os.path.join(video_dir, frame_names[0]))
 if frame is None:
     raise ValueError(f"Could not read first frame from {os.path.join(video_dir, frame_names[0])}")
@@ -259,11 +409,13 @@ height, width, _ = frame.shape
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 out = cv2.VideoWriter(output_video_path, fourcc, 10, (width, height))
 
-# Generate random colors for each unique mask ID
+# Assign colors to each unique mask ID
 all_mask_ids = set()
 for masks in video_segments.values():
     all_mask_ids.update(masks.keys())
-colors = {mask_id: tuple(np.random.randint(0, 255, 3).tolist()) for mask_id in all_mask_ids}
+colors = {}
+for i, mask_id in enumerate(all_mask_ids):
+    colors[mask_id] = COLORS[i % len(COLORS)]
 
 # Process each frame
 for frame_idx in range(len(frame_names)):

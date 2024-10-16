@@ -3,12 +3,18 @@ import numpy as np
 from pathlib import Path
 import re
 import tifffile
+import javabridge
+import bioformats
+import xml.etree.ElementTree as ET
+import logging	
+import random
+import tqdm
 
 def get_supported_video_extensions():
     return ['.avi', '.mp4', '.mov', '.mkv', '.wmv', '.flv']
 
 def get_supported_image_extensions():
-    return ['.png', '.jpg', '.jpeg', '.tif', '.tiff']
+    return ['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.nd2']
 
 def process_tif_frame(frame):
     # Check if the frame is 16-bit
@@ -27,8 +33,29 @@ def process_tif_frame(frame):
 
     return frame_8bit
 
+def process_nd2_frame(frame):
+    # Convert to 8-bit if necessary
+    if frame.dtype != np.uint8:
+        frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    
+    # Convert to 3-channel if grayscale
+    if len(frame.shape) == 2:
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    elif len(frame.shape) == 3 and frame.shape[2] > 3:
+        frame = frame[:, :, :3]  # Take only the first 3 channels if there are more
+    
+    return frame
+
 def check_file_readability(file_path):
-    if file_path.suffix.lower() in ['.tif', '.tiff']:
+    if file_path.suffix.lower() == '.nd2':
+        try:
+            with bioformats.ImageReader(str(file_path)) as reader:
+                if reader.rdr.getImageCount() == 0:
+                    return False, "The ND2 file is empty or corrupted."
+            return True, ""
+        except Exception as e:
+            return False, f"Error reading ND2 file: {str(e)}"
+    elif file_path.suffix.lower() in ['.tif', '.tiff']:
         try:
             with tifffile.TiffFile(str(file_path)) as tif:
                 if len(tif.pages) == 0:
@@ -67,7 +94,18 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
     file_output_dir = output_dir / new_folder_name
     file_output_dir.mkdir(parents=True, exist_ok=True)
     
-    if file_path.suffix.lower() in ['.tif', '.tiff']:
+    if file_path.suffix.lower() == '.nd2':
+        # Process ND2 file using bioformats
+        with bioformats.ImageReader(str(file_path)) as reader:
+            metadata = bioformats.get_omexml_metadata(str(file_path))
+            ome = ET.fromstring(metadata)
+            pixels = ome.find('.//ome:Pixels', {'ome': 'http://www.openmicroscopy.org/Schemas/OME/2016-06'})
+            total_frames = int(pixels.get('SizeT'))
+            orig_width = int(pixels.get('SizeX'))
+            orig_height = int(pixels.get('SizeY'))
+            if fps is None:
+                fps = float(pixels.find('.//ome:Plane', {'ome': 'http://www.openmicroscopy.org/Schemas/OME/2016-06'}).get('DeltaT', 30))
+    elif file_path.suffix.lower() in ['.tif', '.tiff']:
         # Process TIF stack
         with tifffile.TiffFile(str(file_path)) as tif:
             total_frames = len(tif.pages)
@@ -91,9 +129,10 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
     if fps is None and 'video_fps' in locals():
         fps = video_fps
     elif fps is None:
-        fps = 30  # Default fps for TIF stacks
+        fps = 10  # Default fps for TIF stacks and ND2 files if not specified
     
-    frame_interval = max(int(total_frames / (fps * (total_frames / 30))), 1)
+    # Process all frames
+    expected_frame_numbers = range(total_frames)
     
     # Check for existing frames in all supported formats
     existing_frames = []
@@ -102,15 +141,14 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
     existing_frames.sort(key=lambda x: int(re.search(r'\d+', x.stem).group()))
     
     existing_frame_numbers = [int(re.search(r'\d+', f.stem).group()) for f in existing_frames]
-    expected_frame_numbers = set(range(0, total_frames, frame_interval))
     
     inconsistencies = []
     
     if existing_frames and not force_reprocess:
-        missing_frame_numbers = sorted(expected_frame_numbers - set(existing_frame_numbers))
+        missing_frame_numbers = sorted(set(expected_frame_numbers) - set(existing_frame_numbers))
         if missing_frame_numbers:
             inconsistencies.append(f"Found {len(missing_frame_numbers)} missing frames. They will be processed.")
-        extra_frame_numbers = sorted(set(existing_frame_numbers) - expected_frame_numbers)
+        extra_frame_numbers = sorted(set(existing_frame_numbers) - set(expected_frame_numbers))
         if extra_frame_numbers:
             inconsistencies.append(f"Found {len(extra_frame_numbers)} unexpected frames. They will be ignored.")
     else:
@@ -130,7 +168,11 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
 
     def process_frame(frame_number):
         nonlocal frame_stats
-        if file_path.suffix.lower() in ['.tif', '.tiff']:
+        if file_path.suffix.lower() == '.nd2':
+            with bioformats.ImageReader(str(file_path)) as reader:
+                frame = reader.read(t=frame_number, rescale=False)
+                frame = process_nd2_frame(frame)
+        elif file_path.suffix.lower() in ['.tif', '.tiff']:
             with tifffile.TiffFile(str(file_path)) as tif:
                 frame = tif.pages[frame_number].asarray()
                 frame = process_tif_frame(frame)
@@ -152,7 +194,8 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
 
         frame_stats['new_frames'] += 1
         frame_stats['total_processed_frames'] += 1
-        print(f"Processed frame: {frame_stats['total_processed_frames']}")
+        if frame_stats['total_processed_frames'] % 100 == 0:  # Print every 10 frames
+            print(f"Processed frame: {frame_stats['total_processed_frames']}/{total_frames}")
         return str(frame_path)
 
     if force_reprocess:
@@ -184,6 +227,8 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
                     frame_paths.append(str(existing_frame))
                     frame_stats['existing_frames'] += 1
                 frame_stats['total_processed_frames'] += 1
+                if frame_stats['total_processed_frames'] % 100 == 0:  # Print every 10 frames
+                    print(f"Processed frame: {frame_stats['total_processed_frames']}/{total_frames}")
             else:
                 path = process_frame(fn)
                 if path:
@@ -200,17 +245,26 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
 
 def process_file(file_path, output_dir, force_reprocess=False):
     try:
+        file_path = Path(file_path)
+        output_dir = Path(output_dir)
+        
         frame_paths, file_height, file_width, inconsistencies, frame_stats = process_file_for_sam2(
             file_path, output_dir, output_format='jpg', force_reprocess=force_reprocess)
 
-        print(f"Frame processing summary:")
+        # Get the subfolder name of the file path
+        sub_folder_name = file_path.parent.name
+        file_name = file_path.stem
+        # Create the correct folder name
+        correct_folder_name = f"{sub_folder_name}-{file_name}"
+        
+        print(f"\nFrame processing summary:")
         print(f"- New frames: {frame_stats['new_frames']}")
         print(f"- Converted frames: {frame_stats['converted_frames']}")
         print(f"- Existing frames (unchanged): {frame_stats['existing_frames']}")
         print(f"Total frames processed: {frame_stats['total_processed_frames']}")
         print(f"Total frames in output: {len(frame_paths)}")
         print(f"File dimensions: {file_width}x{file_height}")
-        print(f"Frames saved in: {Path(output_dir) / Path(file_path).stem}")
+        print(f"Frames saved in: {output_dir / correct_folder_name}")
         if inconsistencies:
             print("Inconsistencies found:")
             for inc in inconsistencies:
@@ -221,8 +275,77 @@ def process_file(file_path, output_dir, force_reprocess=False):
     except ValueError as e:
         print(f"Error processing file: {e}")
 
+def process_random_unprocessed_video(video_files_dir, output_dir):
+    video_files_dir = Path(video_files_dir)
+    output_dir = Path(output_dir)
+
+    # Get all video files
+    all_videos = []
+    for ext in get_supported_video_extensions() + get_supported_image_extensions():
+        all_videos.extend(video_files_dir.glob(f"**/*{ext}"))
+
+    # Get all processed videos
+    processed_videos = set(dir.name.split('-')[1] for dir in output_dir.iterdir() if dir.is_dir())
+
+    # Filter out processed videos
+    unprocessed_videos = [video for video in all_videos if video.stem not in processed_videos]
+
+    if not unprocessed_videos:
+        print("All videos have been processed.")
+        return
+
+    # Select a random unprocessed video
+    random_video = random.choice(unprocessed_videos)
+
+    print(f"Processing video: {random_video}")
+    process_file(random_video, output_dir)
+
+
+
 # Example usage
-file_path = '/home/maxime/prg/phd/ria/MMH99_10s_20190813_03.tif'  # Can be a TIF stack or a video file
+video_files = "/home/maxime/prg/phd/ria/data_original/AG"
+save_jpg_dir = "/home/maxime/prg/phd/ria/data_foranalysis/videotojpg"
+
+process_random_unprocessed_video(video_files, save_jpg_dir)
+
+
+
+
+
+###ND2 stuff
+
+
+if __name__ == "__main__":
+    # Start Java VM
+    javabridge.start_vm(class_path=bioformats.JARS)
+
+    try:
+        # Example usage
+        file_path = '/home/maxime/prg/phd/ria/nt03.nd2'
+        output_dir = "/home/maxime/prg/phd/ria/tstvideo"
+
+        process_file(file_path, output_dir)
+
+    finally:
+        # Kill Java VM
+        javabridge.kill_vm()
+
+# Example usage
+file_path = '/home/maxime/prg/phd/ria/nt02.nd2'
 output_dir = "/home/maxime/prg/phd/ria/tstvideo"
 
-process_file(file_path, output_dir, force_reprocess=True)
+process_file(file_path, output_dir)
+
+
+import javabridge
+import bioformats
+
+javabridge.start_vm(class_path=bioformats.JARS)
+
+try:
+    with bioformats.ImageReader('/home/maxime/prg/phd/ria/nt02.nd2') as reader:
+        metadata = bioformats.get_omexml_metadata('/home/maxime/prg/phd/ria/nt02.nd2')
+        print(metadata)
+finally:
+    javabridge.kill_vm()
+
