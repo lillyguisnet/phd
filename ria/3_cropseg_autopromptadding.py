@@ -636,6 +636,7 @@ crop_videos_dir = '/home/lilly/phd/ria/data_foranalysis/riacrop/'
 segmented_videos_dir = '/home/lilly/phd/ria/data_analyzed/ria_segmentation/'
 
 video_dir = get_random_unprocessed_video(crop_videos_dir, segmented_videos_dir)
+video_dir = '/home/lilly/phd/ria/data_foranalysis/riacrop/AG-MMH99_10s_20190306_02_crop'
 print(f"Processing video: {video_dir}")
 
 prompt_dir = '/home/lilly/phd/ria/prompt_frames'
@@ -658,6 +659,7 @@ for frame_num in prompt_data:
 frame_names = sorted([p for p in os.listdir(video_dir) if p.lower().endswith(('.jpg', '.jpeg'))],
                      key=lambda p: int(os.path.splitext(p)[0]))
 
+predictor.reset_state(inference_state)
 inference_state = predictor.init_state(video_path=video_dir)
 
 # Add prompts for each frame
@@ -673,7 +675,7 @@ for new_frame_num, original_frame_num in frame_mapping.items():
 prompt_frame_results = analyze_prompt_frames_immediate(video_dir, frame_mapping, prompt_data, inference_state, predictor)
 print_prompt_frame_analysis(prompt_frame_results)
 
-prompts_for_frame = check_prompt_data(10, prompt_data, video_dir, inference_state, frame_mapping)
+prompts_for_frame = check_prompt_data(17, prompt_data, video_dir, inference_state, frame_mapping)
 
 
 # Propagate in video
@@ -691,7 +693,7 @@ remove_prompt_frames_from_video(video_dir, frame_mapping)
 # Check results
 analyze_and_print_results(video_segments)
 
-overlay_predictions_on_frame(video_dir, 3, video_segments, alpha=0.99)
+overlay_predictions_on_frame(video_dir, 10, video_segments, alpha=0.99)
 
 #Make video with masks
 create_mask_overlay_video(
@@ -718,12 +720,14 @@ prompt_data["13"]
 
 # region [find prompts]
 new_prompts = {}
-new_prompt_frame = 625  #frame index
+new_prompt_frame = 630  #frame index
 #NRD
 ann_obj_id = 2  #object id
 #points = np.array([[277, 307]], dtype=np.float32) #full frame
-points = np.array([[40., 36.]], dtype=np.float32) #cropped frame nrd only
-labels = np.array([1], np.int32)
+points = np.array([[44., 43.],
+                   [49, 45]], dtype=np.float32) #cropped frame nrd only
+labels = np.array([1,
+                   0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
     inference_state=inference_state,
@@ -746,12 +750,11 @@ plt.close()
 
 #NRV
 ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[61., 46.],
-       [66., 55.],
-       [41., 58.],
-       [69., 59.]], dtype=np.float32) #cropped frame nrv only
+points = np.array([[61., 52.], [65, 57],
+                   [59, 50], [68, 60], [67, 61], [70, 63]], dtype=np.float32) #cropped frame nrv only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1, 1, 0, 0], np.int32)
+labels = np.array([1, 1,
+                    0, 0, 0, 0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -776,14 +779,11 @@ plt.close()
 
 #LOOP
 ann_obj_id = 4  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[69., 59.],
-       [75., 72.],
-       [68., 58.],
-       [63., 50.],
-       [62., 49.],
-       [65., 53.], [67, 57]], dtype=np.float32) #cropped frame loop only
+points = np.array([[70., 67.],
+                   [68, 62], [69, 63], [69, 60]], dtype=np.float32) #cropped frame loop only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1, 1, 0, 0, 0, 0, 0], np.int32)
+labels = np.array([1,
+                   0, 0, 0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(

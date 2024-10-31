@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("/home/maxime/prg/phd/segment-anything-2")
+sys.path.append("/home/lilly/phd/segment-anything-2")
 
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -217,9 +217,9 @@ def get_random_unprocessed_video(parent_dir, crop_dir):
     return os.path.join(parent_dir, random.choice(unprocessed_videos))
 
 
-parent_video_dir = '/home/maxime/prg/phd/ria/data_foranalysis/videotojpg'
-crop_dir = '/home/maxime/prg/phd/ria/data_foranalysis/riacrop/'
-prompt_image_path = '/home/maxime/prg/phd/ria/AGriaprompt.jpg'
+parent_video_dir = '/home/lilly/phd/ria/data_foranalysis/videotojpg'
+crop_dir = '/home/lilly/phd/ria/data_foranalysis/riacrop/'
+prompt_image_path = '/home/lilly/phd/ria/AGriaprompt.jpg'
 
 
 # Get a random unprocessed video

@@ -1,6 +1,6 @@
 import pandas as pd
 
-df = pd.read_csv('/home/maxime/prg/phd/wellswimming/df_swim.csv')
+df = pd.read_csv('/home/lilly/phd/wellswimming/df_swim.csv')
 
 df.head()
 
@@ -159,3 +159,104 @@ def analyze_grouped_periodicity(df, group_col='condition', condition_col='mc_con
 
 # Usage
 analyze_grouped_periodicity(df, group_col='condition', condition_col='mc_concentration', value_col='bends')
+
+
+
+
+# New code block for autocorrelation plot containing all conditions
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from statsmodels.tsa.stattools import acf
+import os
+
+# Load the data (assuming df is already loaded)
+# df = pd.read_csv('/home/lilly/phd/wellswimming/df_swim.csv')
+
+def plot_acf_all_conditions(df, group_col='condition', value_col='bends', lags=50):
+    conditions = sorted(df[group_col].unique())
+    viscosities = sorted(df['mc_concentration'].unique())
+    
+    fig, axes = plt.subplots(len(conditions), len(viscosities), figsize=(20, 5*len(conditions)), squeeze=False)
+    
+    condition_titles = {
+        'a': 'Agar ancestry, Agar growth',
+        'b': 'Agar ancestry, Scaffold growth',
+        'c': 'Scaffold ancestry, Scaffold growth',
+        'd': 'Scaffold ancestry, Agar growth'
+    }
+    
+    for i, condition in enumerate(conditions):
+        for j, viscosity in enumerate(viscosities):
+            subset = df[(df[group_col] == condition) & (df['mc_concentration'] == viscosity)]
+            if not subset.empty:
+                ax = axes[i, j]
+                acf_values = acf(subset[value_col], nlags=lags)
+                ax.bar(range(len(acf_values)), acf_values)
+                ax.set_xlabel('Lag')
+                ax.set_ylabel('ACF')
+                ax.set_title(f"{condition_titles[condition]}, Viscosity (MC %): {viscosity}")
+    
+    plt.tight_layout()
+    return fig
+
+
+fig = plot_acf_all_conditions(df)
+
+filename = os.path.join('wellswimming/Autocorrelation_Function_all_conditions_paper.png')
+fig.savefig(filename)
+plt.close(fig)
+
+
+# New code block for wavelet transform plot containing all conditions
+def plot_wavelet_all_conditions(df, group_col='condition', value_col='bends', scales=np.arange(1, 128), wavelet='cmor'):
+    conditions = sorted(df[group_col].unique())
+    viscosities = sorted(df['mc_concentration'].unique())
+    
+    fig, axes = plt.subplots(len(conditions), len(viscosities), figsize=(20, 5*len(conditions)), squeeze=False)
+    
+    condition_titles = {
+        'a': 'Agar ancestry, Agar growth',
+        'b': 'Agar ancestry, Scaffold growth',
+        'c': 'Scaffold ancestry, Scaffold growth',
+        'd': 'Scaffold ancestry, Agar growth'
+    }
+    
+    # Calculate global magnitude range
+    all_coefs = []
+    for condition in conditions:
+        for viscosity in viscosities:
+            subset = df[(df[group_col] == condition) & (df['mc_concentration'] == viscosity)]
+            if not subset.empty:
+                coef, _ = pywt.cwt(subset[value_col], scales, wavelet)
+                all_coefs.append(np.abs(coef))
+    
+    vmin = min(np.min(coef) for coef in all_coefs)
+    vmax = max(np.max(coef) for coef in all_coefs)
+    
+    for i, condition in enumerate(conditions):
+        for j, viscosity in enumerate(viscosities):
+            subset = df[(df[group_col] == condition) & (df['mc_concentration'] == viscosity)]
+            if not subset.empty:
+                ax = axes[i, j]
+                coef, freqs = pywt.cwt(subset[value_col], scales, wavelet)
+                im = ax.imshow(np.abs(coef), extent=[1, len(subset), 1, len(scales)], 
+                               aspect='auto', interpolation='nearest', cmap='viridis',
+                               vmin=vmin, vmax=vmax)
+                ax.set_ylabel('Scale')
+                ax.set_xlabel('Time')
+                ax.set_title(f"{condition_titles[condition]}, Viscosity (MC %): {viscosity}")
+                
+                # Add colorbar
+                plt.colorbar(im, ax=ax, label='Magnitude')
+    
+    plt.tight_layout()
+    return fig
+
+# Generate the wavelet transform plot
+fig_wavelet = plot_wavelet_all_conditions(df)
+
+# Save the figure
+filename_wavelet = os.path.join('wellswimming', 'Wavelet_Transform_all_conditions_paper.png')
+fig_wavelet.savefig(filename_wavelet)
+plt.close(fig_wavelet)

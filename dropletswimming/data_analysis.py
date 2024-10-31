@@ -85,16 +85,17 @@ def process_h5_files(folder_path, ignore_keys=None, max_files=None):
     return pd.concat(all_dataframes, ignore_index=True)
 
 # Usage
-folder_path = 'C:/Users/aurel/Documents/GitHub/phd/dropletswimming/final_shapenalysis'
+folder_path = '/home/lilly/phd/dropletswimming/data_analyzed/final_shapenalysis'
 ignore_keys = ['masks', 'fps', 'smooth_points']
 #max_files = 30  # Set this to the number of files you want to process, or None for all files
 
 combined_df = process_h5_files(folder_path, ignore_keys=ignore_keys)
 
 # Save the combined DataFrame to a CSV file
-output_file = 'combined_data_sample.csv'
-#combined_df.to_csv(output_file, index=False)
+output_file = 'combined_data_all.csv'
+combined_df.to_csv(output_file, index=False)
 print(f"Combined data saved to {output_file}")
+
 
 # Display some information about the combined DataFrame
 print(f"Combined DataFrame shape: {combined_df.shape}")
@@ -109,7 +110,7 @@ print("\nProcessed files:")
 print(processed_files)
 
 #Load the combined dataframe from the csv file
-combined_df = pd.read_csv('combined_data_sample.csv')
+combined_df = pd.read_csv('dropletswimming/combined_data_all.csv')
 
  
 ### Detect when the worm is turned on the z-axis by finding frames where worm length is smaller than 1 std of the mean worm length
@@ -206,7 +207,8 @@ combined_df = combined_df.merge(shape_percentages, on='video_id', how='left')
 combined_df['c_shape_percentage'].unique()
 
 #Save the combined dataframe to a csv file
-combined_df.to_csv('combined_data_sample_with_shape_percentages.csv', index=False)
+combined_df.to_csv('dropletswimming/combined_data_with_shape_percentages_all.csv', index=False)
+
 
 # endregion [Data analysis]
 
@@ -1596,7 +1598,7 @@ def extract_info_from_filename(filename):
 new_interpolated_freqs_df[['viscosity', 'condition', 'id']] = new_interpolated_freqs_df['video_id'].apply(lambda x: pd.Series(extract_info_from_filename(x)))
 
 #Save the new_interpolated_freqs_df to a csv file
-new_interpolated_freqs_df.to_csv('new_interpolated_freqs_df.csv', index=False)
+new_interpolated_freqs_df.to_csv('dropletswimming/new_interpolated_freqs_df_all.csv', index=False)
 
 
 

@@ -28,6 +28,7 @@ def load_video_segments_from_h5(filename):
 output_dir = '/home/lilly/phd/ria/data_analyzed/ria_segmentation'
 filename = 'AG-MMH122_10s_20190830_04_crop_riasegmentation.h5'
 full_path = os.path.join(output_dir, filename)
+full_path = '/home/lilly/phd/ria/data_analyzed/ria_segmentation/AG-MMH99_10s_20190306_02_crop_riasegmentation.h5'
 loaded_video_segments = load_video_segments_from_h5(full_path)
 
 
@@ -402,6 +403,119 @@ analysis_results = analyze_movement_results(movement_results)
 print_movement_analysis_summary(analysis_results)
 
 
+#Remove pixels in mask4 that are within min_distance pixels from any pixel in mask3.
+def filter_by_distance(mask3, mask4, min_distance=6, min_pixels=3):
+    """
+    Filter out pixels in mask4 that are within min_distance pixels from any pixel in mask3.
+    If all pixels would be filtered out, keep the min_pixels furthest pixels.
+    
+    Parameters:
+    -----------
+    mask3 : numpy.ndarray
+        Binary mask for segment 3
+    mask4 : numpy.ndarray
+        Binary mask for segment 4
+    min_distance : float
+        Minimum Euclidean distance in pixels (default: 6)
+    min_pixels : int
+        Minimum number of pixels to preserve from mask4 (default: 3)
+        
+    Returns:
+    --------
+    numpy.ndarray
+        Filtered mask4 with pixels too close to mask3 removed
+    """
+    # Ensure masks are 2D
+    mask3 = np.squeeze(mask3)
+    mask4 = np.squeeze(mask4)
+    
+    if mask3.ndim != 2 or mask4.ndim != 2:
+        raise ValueError(f"Masks must be 2D after squeezing. Got shapes: mask3={mask3.shape}, mask4={mask4.shape}")
+    
+    # Ensure masks are boolean
+    mask3 = mask3.astype(bool)
+    mask4 = mask4.astype(bool)
+    
+    # Convert to correct format for distanceTransform (8-bit unsigned integer)
+    mask3_uint8 = np.ascontiguousarray(mask3.astype(np.uint8))
+    
+    # Calculate distance transform from mask3
+    dist_transform = cv2.distanceTransform(
+        (1 - mask3_uint8),  # Invert mask3
+        cv2.DIST_L2,
+        cv2.DIST_MASK_PRECISE
+    )
+    
+    # Create initial distance mask
+    distance_mask = dist_transform >= min_distance
+    
+    # Apply the distance mask to mask4
+    filtered_mask4 = np.logical_and(mask4, distance_mask)
+    
+    # If filtered mask is empty or has fewer than min_pixels pixels,
+    # keep the furthest min_pixels pixels from mask3
+    if np.sum(filtered_mask4) < min_pixels:
+        # Get distances for all mask4 pixels
+        mask4_distances = dist_transform[mask4]
+        if len(mask4_distances) > 0:
+            # Sort distances in descending order
+            distances_sorted = np.sort(mask4_distances)[::-1]
+            # Get the distance threshold that keeps exactly min_pixels
+            # (or all pixels if there are fewer than min_pixels)
+            distance_threshold = distances_sorted[min(min_pixels - 1, len(distances_sorted) - 1)]
+            # Create new mask keeping only the furthest pixels
+            filtered_mask4 = np.logical_and(mask4, dist_transform >= distance_threshold)
+    
+    # Ensure output has same shape as input
+    if filtered_mask4.shape != mask4.shape:
+        raise ValueError(f"Output shape {filtered_mask4.shape} doesn't match input shape {mask4.shape}")
+    
+    return filtered_mask4
+
+
+def master_clean_segments(segments, min_size=3, min_distance=6, min_pixels=3):
+    """
+    Master function to clean all segments with multiple cleaning operations.
+    
+    Parameters:
+    -----------
+    segments : dict
+        Dictionary of frame masks
+    min_size : int
+        Minimum size for connected components
+    min_distance : float
+        Minimum distance between mask3 and mask4 pixels
+    min_pixels : int
+        Minimum number of pixels to preserve from mask4
+        
+    Returns:
+    --------
+    dict
+        Cleaned segments
+    """
+    # Step 1: Filter to keep only masks 2, 3, and 4
+    cleaned_segments = filter_masks(segments)
+    
+    # Step 2: Remove small components
+    for frame, masks in cleaned_segments.items():
+        for mask_id, mask in masks.items():
+            cleaned_segments[frame][mask_id] = remove_small_components(mask, min_size)
+    
+    # Step 3: Filter mask4 based on distance from mask3
+    for frame, masks in cleaned_segments.items():
+        if 3 in masks and 4 in masks:
+            cleaned_segments[frame][4] = filter_by_distance(
+                masks[3],
+                masks[4],
+                min_distance=min_distance,
+                min_pixels=min_pixels
+            )
+    
+    return cleaned_segments
+
+
+cleaned_distance_segments = master_clean_segments(cleaned_segments, min_size=3, min_distance=6, min_pixels=3)
+
 
 
 def save_cleaned_segments_to_h5(cleaned_segments, filename):
@@ -536,14 +650,14 @@ video_name = filename.split('_riasegmentation.h5')[0]
 image_folder = os.path.join(video_folder, video_name)
 
 
-frame = 611
-mask_id = 3
-
+frame = 537
+mask_id = 4
+image_folder = "/home/lilly/phd/ria/data_foranalysis/riacrop/AG-MMH99_10s_20190306_02_crop"
 # Load the original image
 original_image = load_original_image(frame, image_folder)
 
 # Get the mask
-mask = loaded_segments[frame][mask_id][0]
+mask = cleaned_segments[frame][mask_id][0]
 
 # Overlay the mask on the original image
 overlayed_image = overlay_mask_on_image(original_image, mask)

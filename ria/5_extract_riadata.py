@@ -31,7 +31,7 @@ def load_cleaned_segments_from_h5(filename):
     print(f"{nb_frames} frames loaded from {filename}")
     return cleaned_segments
 
-filename = '/home/lilly/phd/ria/data_analyzed/cleaned_segments/AG-MMH122_10s_20190830_04_crop_riasegmentation_cleanedsegments.h5'
+filename = '/home/lilly/phd/ria/data_analyzed/cleaned_segments/AG-MMH99_10s_20190306_02_crop_riasegmentation_cleanedsegments.h5'
 
 cleaned_segments = load_cleaned_segments_from_h5(filename)
 
@@ -54,7 +54,7 @@ def get_background_sample(frame_masks, image_shape, num_samples=100, min_distanc
         return valid_coords[sampled_indices]
 
 def load_image(frame_idx):
-    image_path = f"/home/lilly/phd/ria/data_foranalysis/riacrop/AG-MMH122_10s_20190830_04_crop/{frame_idx:06d}.jpg"
+    image_path = f"/home/lilly/phd/ria/tstvideo/ria-MMH99_10s_20190813_03_crop/{frame_idx:06d}.jpg"
     return cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
 
 def count_mask_pixels(masks):
