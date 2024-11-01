@@ -628,6 +628,7 @@ filename = '/home/lilly/phd/ria/data_analyzed/ria_segmentation/AG-MMH99_10s_2019
 output_filename = save_cleaned_segments_to_h5(final_masks, filename)
 
 # Load the cleaned segments
+output_filename = "/home/lilly/phd/ria/data_analyzed/aligned_segments/AG-MMH99_10s_20190306_02_crop_riasegmentation_alignedsegments.h5"
 loaded_segments = load_cleaned_segments_from_h5(output_filename)
 
 # Perform detailed comparison
@@ -636,13 +637,12 @@ compare_cleaned_segments(final_masks, loaded_segments)
 
 
 
-
-
-####Compare segmentattions
+####Compare segmentations
 def normalize(series):
     min_val = series.min()
     max_val = series.max()
     return (series - min_val) / (max_val - min_val)
+
 #Get mean and std of brightness values from masked regions using average mask
 def extract_brightness_values(aligned_images: List[np.ndarray],
                             masks_dict: Dict[int, Dict[int, np.ndarray]], 
@@ -696,92 +696,147 @@ for img_file in image_files:
         if img is not None:
             aligned_images.append(img)
 
+final_masks = load_cleaned_segments_from_h5(output_filename)
 brightness_loop = extract_brightness_values(aligned_images, final_masks, 4)
 brightness_nrd = extract_brightness_values(aligned_images, final_masks, 2)
 brightness_nrv = extract_brightness_values(aligned_images, final_masks, 3)
 
+# Load all Fiji data files
+fiji_dir = "/home/lilly/phd/ria/MMH99_10s_20190306_02"
+fiji_files = [f for f in os.listdir(fiji_dir) if f.endswith('.xlsx')]
 
+all_fiji_data = []
+for file in fiji_files:
+    df = pd.read_excel(os.path.join(fiji_dir, file))
+    all_fiji_data.append(df)
 
-# Create plot of normalized brightness over frames with four subplots
+# Combine all Fiji data
+fiji_combined = pd.concat(all_fiji_data)
+
+# Group by frame and calculate mean and std for each segment
+fiji_stats = fiji_combined.groupby('Frame').agg({
+    'loop': ['mean', 'std'],
+    'nrD': ['mean', 'std'],
+    'nrV': ['mean', 'std']
+}).reset_index()
+
+# Normalize means and calculate normalized std and 95% confidence intervals
+# For each segment, calculate std relative to the range of the mean
+for segment in ['loop', 'nrD', 'nrV']:
+    mean_range = fiji_stats[(segment, 'mean')].max() - fiji_stats[(segment, 'mean')].min()
+    fiji_stats[(segment, 'std_norm')] = fiji_stats[(segment, 'std')] / mean_range
+    
+    # Calculate 95% confidence interval (1.96 * std error)
+    n = len(fiji_combined[fiji_combined['Frame'] == fiji_stats['Frame'][0]][segment])  # samples per frame
+    fiji_stats[(segment, 'ci_norm')] = (1.96 * fiji_stats[(segment, 'std')] / np.sqrt(n)) / mean_range
+    fiji_stats[(segment, 'mean_norm')] = normalize(fiji_stats[(segment, 'mean')])
+
+# Create plot with ribbons
 fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(40, 32))
 
-# Define colors for each segment type
+# Define colors
 loop_color = 'blue'
-nrv_color = 'red' 
+nrv_color = 'red'
 nrd_color = 'green'
-fiji_color = 'purple'  # Single color for all Fiji lines
+fiji_color = 'purple'
+alpha_ribbon = 0.3
 
-# Top subplot - loop lines only
+# Top subplot - loop
 ax1.plot(brightness_loop['frame'].to_numpy(), normalize(brightness_loop['mean_brightness']).to_numpy(),
          color=loop_color, linestyle='--', linewidth=2, label='Aligned Loop')
 
-ax1.plot(fiji_data['Frame'].values, fiji_data['loop_normalized'].values,
-         color=fiji_color, linewidth=2, label='Fiji Loop')
+ax1.plot(fiji_stats['Frame'].to_numpy(), fiji_stats[('loop', 'mean_norm')].to_numpy(),
+         color=fiji_color, linewidth=2, label='Fiji Loop Mean')
+ax1.fill_between(fiji_stats['Frame'].to_numpy(),
+                 fiji_stats[('loop', 'mean_norm')].to_numpy() - fiji_stats[('loop', 'std_norm')].to_numpy(),
+                 fiji_stats[('loop', 'mean_norm')].to_numpy() + fiji_stats[('loop', 'std_norm')].to_numpy(),
+                 color=fiji_color, alpha=alpha_ribbon)
 
 ax1.set_xlabel('Frame Number', fontsize=14)
 ax1.set_ylabel('Normalized Brightness', fontsize=14)
 ax1.set_title('Normalized Brightness Over Frames (Loop)', fontsize=18)
 ax1.grid(True, linestyle='--', alpha=0.7)
-ax1.set_xticks(np.arange(0, len(nonaligned_loop), 10))
+ax1.set_xticks(np.arange(0, len(brightness_loop), 10))
 ax1.tick_params(axis='both', labelsize=12)
 ax1.legend(fontsize=12)
 ax1.axvline(x=100, color='k', linestyle='--', alpha=0.5)
 ax1.axvline(x=300, color='k', linestyle='--', alpha=0.5)
 ax1.axvline(x=500, color='k', linestyle='--', alpha=0.5)
 
-# Middle subplot - nrV lines
-ax2.plot(brightness_nrv['frame'].to_numpy(), normalize(brightness_nrv['mean_brightness']).to_numpy(), 
+# Middle subplot - nrV
+ax2.plot(brightness_nrv['frame'].to_numpy(), normalize(brightness_nrv['mean_brightness']).to_numpy(),
          color=nrv_color, linewidth=2, label='Aligned nrV')
-ax2.plot(fiji_data['Frame'].values, fiji_data['nrV_normalized'].values,
-         color=fiji_color, linewidth=2, label='Fiji nrV')
+
+ax2.plot(fiji_stats['Frame'].to_numpy(), fiji_stats[('nrV', 'mean_norm')].to_numpy(),
+         color=fiji_color, linewidth=2, label='Fiji nrV Mean')
+ax2.fill_between(fiji_stats['Frame'].to_numpy(),
+                 fiji_stats[('nrV', 'mean_norm')].to_numpy() - fiji_stats[('nrV', 'std_norm')].to_numpy(),
+                 fiji_stats[('nrV', 'mean_norm')].to_numpy() + fiji_stats[('nrV', 'std_norm')].to_numpy(),
+                 color=fiji_color, alpha=alpha_ribbon)
 
 ax2.set_xlabel('Frame Number', fontsize=14)
 ax2.set_ylabel('Normalized Brightness', fontsize=14)
 ax2.set_title('Normalized Brightness Over Frames (nrV)', fontsize=18)
 ax2.grid(True, linestyle='--', alpha=0.7)
-ax2.set_xticks(np.arange(0, len(nonaligned_nrv), 10))
+ax2.set_xticks(np.arange(0, len(brightness_nrv), 10))
 ax2.tick_params(axis='both', labelsize=12)
 ax2.legend(fontsize=12)
 ax2.axvline(x=100, color='k', linestyle='--', alpha=0.5)
 ax2.axvline(x=300, color='k', linestyle='--', alpha=0.5)
 ax2.axvline(x=500, color='k', linestyle='--', alpha=0.5)
 
-# Bottom subplot - nrD lines
-ax3.plot(brightness_nrd['frame'].to_numpy(), normalize(brightness_nrd['mean_brightness']).to_numpy(), 
+# Bottom subplot - nrD
+ax3.plot(brightness_nrd['frame'].to_numpy(), normalize(brightness_nrd['mean_brightness']).to_numpy(),
          color=nrd_color, linewidth=2, label='Aligned nrD')
-ax3.plot(fiji_data['Frame'].values, fiji_data['nrD_normalized'].values,
-         color=fiji_color, linewidth=2, label='Fiji nrD')
+
+ax3.plot(fiji_stats['Frame'].to_numpy(), fiji_stats[('nrD', 'mean_norm')].to_numpy(),
+         color=fiji_color, linewidth=2, label='Fiji nrD Mean')
+ax3.fill_between(fiji_stats['Frame'].to_numpy(),
+                 fiji_stats[('nrD', 'mean_norm')].to_numpy() - fiji_stats[('nrD', 'std_norm')].to_numpy(),
+                 fiji_stats[('nrD', 'mean_norm')].to_numpy() + fiji_stats[('nrD', 'std_norm')].to_numpy(),
+                 color=fiji_color, alpha=alpha_ribbon)
+
 ax3.set_xlabel('Frame Number', fontsize=14)
 ax3.set_ylabel('Normalized Brightness', fontsize=14)
 ax3.set_title('Normalized Brightness Over Frames (nrD)', fontsize=18)
 ax3.grid(True, linestyle='--', alpha=0.7)
-ax3.set_xticks(np.arange(0, len(nonaligned_nrd), 10))
+ax3.set_xticks(np.arange(0, len(brightness_nrd), 10))
 ax3.tick_params(axis='both', labelsize=12)
 ax3.legend(fontsize=12)
 ax3.axvline(x=100, color='k', linestyle='--', alpha=0.5)
 ax3.axvline(x=300, color='k', linestyle='--', alpha=0.5)
 ax3.axvline(x=500, color='k', linestyle='--', alpha=0.5)
 
-# Fourth subplot - sum of all segments (summed before normalization)
+# Fourth subplot - sum of all segments
 sum_aligned = brightness_loop['mean_brightness'].to_numpy() + \
              brightness_nrv['mean_brightness'].to_numpy() + \
              brightness_nrd['mean_brightness'].to_numpy()
-# Normalize the sum
 sum_aligned_normalized = normalize(sum_aligned)
 
-# For Fiji data, sum the raw values first, then normalize
-fiji_sum = fiji_data['loop'] + fiji_data['nrV'] + fiji_data['nrD']
-sum_fiji_normalized = normalize(fiji_sum)
+# For Fiji data, sum the means first, then normalize
+fiji_sum_mean = fiji_stats[('loop', 'mean')] + fiji_stats[('nrV', 'mean')] + fiji_stats[('nrD', 'mean')]
+# Calculate normalized std for sum using error propagation
+fiji_sum_std = np.sqrt(
+    (fiji_stats[('loop', 'std_norm')])**2 + 
+    (fiji_stats[('nrV', 'std_norm')])**2 + 
+    (fiji_stats[('nrD', 'std_norm')])**2
+)
+fiji_sum_normalized = normalize(fiji_sum_mean)
 
 ax4.plot(brightness_loop['frame'].to_numpy(), sum_aligned_normalized,
          color='black', linewidth=2, label='Sum of Aligned Segments')
-ax4.plot(fiji_data['Frame'].values, sum_fiji_normalized.values,
-         color=fiji_color, linewidth=2, label='Sum of Fiji Segments')
+ax4.plot(fiji_stats['Frame'].to_numpy(), fiji_sum_normalized.to_numpy(),
+         color=fiji_color, linewidth=2, label='Sum of Fiji Segments Mean')
+ax4.fill_between(fiji_stats['Frame'].to_numpy(),
+                 fiji_sum_normalized.to_numpy() - fiji_sum_std.to_numpy(),
+                 fiji_sum_normalized.to_numpy() + fiji_sum_std.to_numpy(),
+                 color=fiji_color, alpha=alpha_ribbon)
+
 ax4.set_xlabel('Frame Number', fontsize=14)
 ax4.set_ylabel('Normalized Sum of Brightness', fontsize=14)
 ax4.set_title('Normalized Sum of All Segments Over Frames', fontsize=18)
 ax4.grid(True, linestyle='--', alpha=0.7)
-ax4.set_xticks(np.arange(0, len(nonaligned_loop), 10))
+ax4.set_xticks(np.arange(0, len(brightness_loop), 10))
 ax4.tick_params(axis='both', labelsize=12)
 ax4.legend(fontsize=12)
 ax4.axvline(x=100, color='k', linestyle='--', alpha=0.5)
