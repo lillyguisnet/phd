@@ -681,6 +681,60 @@ def extract_brightness_values(aligned_images: List[np.ndarray],
     
     return pd.DataFrame(data)
 
+
+def extract_top_percent_brightness(aligned_images: List[np.ndarray],
+                                 masks_dict: Dict[int, Dict[int, np.ndarray]], 
+                                 object_id: int,
+                                 percent: float) -> pd.DataFrame:
+    """
+    Extracts mean brightness of the top X% brightest pixels from masked regions.
+    
+    Parameters:
+        aligned_images: List of grayscale images (numpy arrays)
+        masks_dict: Dictionary where keys are frame indices and values are
+                   dictionaries of mask_id: mask pairs for that frame
+        object_id: ID of the object whose mask should be used
+        percent: Percentage of brightest pixels to consider (0-100)
+        
+    Returns:
+        DataFrame containing frame number and mean brightness of top X% pixels for each frame
+    """
+    # Validate percentage input
+    if not 0 < percent <= 100:
+        raise ValueError("Percentage must be between 0 and 100")
+        
+    data = []
+    
+    for frame_idx, image in enumerate(aligned_images):
+        if frame_idx in masks_dict and object_id in masks_dict[frame_idx]:
+            # Get mask for this frame and object
+            mask = masks_dict[frame_idx][object_id][0]
+            
+            # Extract pixels within mask
+            masked_pixels = image[mask]
+            
+            # Calculate number of pixels to use based on percentage
+            n_pixels = int(round(len(masked_pixels) * (percent / 100)))
+            # Ensure at least 1 pixel is used
+            n_pixels = max(1, n_pixels)
+            
+            # Get top percentage of brightest pixels
+            top_n_pixels = np.sort(masked_pixels)[-n_pixels:]
+            
+            # Calculate mean of top pixels
+            mean_top_percent = np.mean(top_n_pixels)
+            
+            data.append({
+                'frame': frame_idx,
+                'mean_top_percent_brightness': mean_top_percent,
+                'n_pixels_used': n_pixels,
+                'total_pixels': len(masked_pixels),
+                'percent_used': percent
+            })
+    
+    return pd.DataFrame(data)
+
+
 img_dir = "/home/lilly/phd/ria/data_foranalysis/riacrop/AG-MMH99_10s_20190306_02_crop"
 
 # Get list of image files sorted by frame number
@@ -700,6 +754,18 @@ final_masks = load_cleaned_segments_from_h5(output_filename)
 brightness_loop = extract_brightness_values(aligned_images, final_masks, 4)
 brightness_nrd = extract_brightness_values(aligned_images, final_masks, 2)
 brightness_nrv = extract_brightness_values(aligned_images, final_masks, 3)
+
+loop_top_10percent = extract_top_percent_brightness(aligned_images, final_masks, 4, percent=10)
+nrd_top_10percent = extract_top_percent_brightness(aligned_images, final_masks, 2, percent=10)
+nrv_top_10percent = extract_top_percent_brightness(aligned_images, final_masks, 3, percent=10)
+
+loop_top_50percent = extract_top_percent_brightness(aligned_images, final_masks, 4, percent=50)
+nrd_top_50percent = extract_top_percent_brightness(aligned_images, final_masks, 2, percent=50)
+nrv_top_50percent = extract_top_percent_brightness(aligned_images, final_masks, 3, percent=50)
+
+loop_top_25percent = extract_top_percent_brightness(aligned_images, final_masks, 4, percent=25)
+nrd_top_25percent = extract_top_percent_brightness(aligned_images, final_masks, 2, percent=25)
+nrv_top_25percent = extract_top_percent_brightness(aligned_images, final_masks, 3, percent=25)
 
 # Load all Fiji data files
 fiji_dir = "/home/lilly/phd/ria/MMH99_10s_20190306_02"
@@ -743,7 +809,13 @@ alpha_ribbon = 0.3
 
 # Top subplot - loop
 ax1.plot(brightness_loop['frame'].to_numpy(), normalize(brightness_loop['mean_brightness']).to_numpy(),
-         color=loop_color, linestyle='--', linewidth=2, label='Aligned Loop')
+         color=loop_color, linewidth=2, label='Aligned Loop')
+ax1.plot(loop_top_10percent['frame'].to_numpy(), normalize(loop_top_10percent['mean_top_percent_brightness']).to_numpy(),
+         color='cyan', linestyle='-', linewidth=1, label='Top 10%')
+ax1.plot(loop_top_25percent['frame'].to_numpy(), normalize(loop_top_25percent['mean_top_percent_brightness']).to_numpy(),
+         color='magenta', linestyle='-', linewidth=1, label='Top 25%')
+ax1.plot(loop_top_50percent['frame'].to_numpy(), normalize(loop_top_50percent['mean_top_percent_brightness']).to_numpy(),
+         color='yellow', linestyle='-', linewidth=1, label='Top 50%')
 
 ax1.plot(fiji_stats['Frame'].to_numpy(), fiji_stats[('loop', 'mean_norm')].to_numpy(),
          color=fiji_color, linewidth=2, label='Fiji Loop Mean')
@@ -766,6 +838,12 @@ ax1.axvline(x=500, color='k', linestyle='--', alpha=0.5)
 # Middle subplot - nrV
 ax2.plot(brightness_nrv['frame'].to_numpy(), normalize(brightness_nrv['mean_brightness']).to_numpy(),
          color=nrv_color, linewidth=2, label='Aligned nrV')
+ax2.plot(nrv_top_10percent['frame'].to_numpy(), normalize(nrv_top_10percent['mean_top_percent_brightness']).to_numpy(),
+         color='cyan', linestyle='-', linewidth=1, label='Top 10%')
+ax2.plot(nrv_top_25percent['frame'].to_numpy(), normalize(nrv_top_25percent['mean_top_percent_brightness']).to_numpy(),
+         color='magenta', linestyle='-', linewidth=1, label='Top 25%')
+ax2.plot(nrv_top_50percent['frame'].to_numpy(), normalize(nrv_top_50percent['mean_top_percent_brightness']).to_numpy(),
+         color='yellow', linestyle='-', linewidth=1, label='Top 50%')
 
 ax2.plot(fiji_stats['Frame'].to_numpy(), fiji_stats[('nrV', 'mean_norm')].to_numpy(),
          color=fiji_color, linewidth=2, label='Fiji nrV Mean')
@@ -788,6 +866,12 @@ ax2.axvline(x=500, color='k', linestyle='--', alpha=0.5)
 # Bottom subplot - nrD
 ax3.plot(brightness_nrd['frame'].to_numpy(), normalize(brightness_nrd['mean_brightness']).to_numpy(),
          color=nrd_color, linewidth=2, label='Aligned nrD')
+ax3.plot(nrd_top_10percent['frame'].to_numpy(), normalize(nrd_top_10percent['mean_top_percent_brightness']).to_numpy(),
+         color='cyan', linestyle='-', linewidth=1, label='Top 10%')
+ax3.plot(nrd_top_25percent['frame'].to_numpy(), normalize(nrd_top_25percent['mean_top_percent_brightness']).to_numpy(),
+         color='magenta', linestyle='-', linewidth=1, label='Top 25%')
+ax3.plot(nrd_top_50percent['frame'].to_numpy(), normalize(nrd_top_50percent['mean_top_percent_brightness']).to_numpy(),
+         color='yellow', linestyle='-', linewidth=1, label='Top 50%')
 
 ax3.plot(fiji_stats['Frame'].to_numpy(), fiji_stats[('nrD', 'mean_norm')].to_numpy(),
          color=fiji_color, linewidth=2, label='Fiji nrD Mean')
@@ -813,6 +897,17 @@ sum_aligned = brightness_loop['mean_brightness'].to_numpy() + \
              brightness_nrd['mean_brightness'].to_numpy()
 sum_aligned_normalized = normalize(sum_aligned)
 
+# Sum of top percentages
+sum_10percent = loop_top_10percent['mean_top_percent_brightness'].to_numpy() + \
+                nrv_top_10percent['mean_top_percent_brightness'].to_numpy() + \
+                nrd_top_10percent['mean_top_percent_brightness'].to_numpy()
+sum_25percent = loop_top_25percent['mean_top_percent_brightness'].to_numpy() + \
+                nrv_top_25percent['mean_top_percent_brightness'].to_numpy() + \
+                nrd_top_25percent['mean_top_percent_brightness'].to_numpy()
+sum_50percent = loop_top_50percent['mean_top_percent_brightness'].to_numpy() + \
+                nrv_top_50percent['mean_top_percent_brightness'].to_numpy() + \
+                nrd_top_50percent['mean_top_percent_brightness'].to_numpy()
+
 # For Fiji data, sum the means first, then normalize
 fiji_sum_mean = fiji_stats[('loop', 'mean')] + fiji_stats[('nrV', 'mean')] + fiji_stats[('nrD', 'mean')]
 # Calculate normalized std for sum using error propagation
@@ -825,6 +920,12 @@ fiji_sum_normalized = normalize(fiji_sum_mean)
 
 ax4.plot(brightness_loop['frame'].to_numpy(), sum_aligned_normalized,
          color='black', linewidth=2, label='Sum of Aligned Segments')
+ax4.plot(brightness_loop['frame'].to_numpy(), normalize(sum_10percent),
+         color='cyan', linestyle='-', linewidth=1, label='Sum Top 10%')
+ax4.plot(brightness_loop['frame'].to_numpy(), normalize(sum_25percent),
+         color='magenta', linestyle='-', linewidth=1, label='Sum Top 25%')
+ax4.plot(brightness_loop['frame'].to_numpy(), normalize(sum_50percent),
+         color='yellow', linestyle='-', linewidth=1, label='Sum Top 50%')
 ax4.plot(fiji_stats['Frame'].to_numpy(), fiji_sum_normalized.to_numpy(),
          color=fiji_color, linewidth=2, label='Sum of Fiji Segments Mean')
 ax4.fill_between(fiji_stats['Frame'].to_numpy(),
