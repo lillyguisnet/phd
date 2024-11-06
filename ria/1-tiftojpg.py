@@ -3,6 +3,9 @@ import numpy as np
 from pathlib import Path
 import re
 import tifffile
+import javabridge
+import bioformats
+import xml.etree.ElementTree as ET
 import logging	
 import random
 import tqdm
@@ -11,10 +14,48 @@ def get_supported_video_extensions():
     return ['.avi', '.mp4', '.mov', '.mkv', '.wmv', '.flv']
 
 def get_supported_image_extensions():
-    return ['.png', '.jpg', '.jpeg', '.tif', '.tiff']
+    return ['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.nd2']
+
+def process_tif_frame(frame):
+    # Check if the frame is 16-bit
+    if frame.dtype == np.uint16:
+        # Normalize to 0-255 range
+        frame_normalized = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX)
+        # Convert to 8-bit
+        frame_8bit = frame_normalized.astype(np.uint8)
+    else:
+        frame_8bit = frame
+
+    # Check if the image is grayscale (single channel)
+    if len(frame_8bit.shape) == 2:
+        # Convert to 3-channel grayscale
+        frame_8bit = cv2.cvtColor(frame_8bit, cv2.COLOR_GRAY2BGR)
+
+    return frame_8bit
+
+def process_nd2_frame(frame):
+    # Convert to 8-bit if necessary
+    if frame.dtype != np.uint8:
+        frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    
+    # Convert to 3-channel if grayscale
+    if len(frame.shape) == 2:
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    elif len(frame.shape) == 3 and frame.shape[2] > 3:
+        frame = frame[:, :, :3]  # Take only the first 3 channels if there are more
+    
+    return frame
 
 def check_file_readability(file_path):
-    if file_path.suffix.lower() in ['.tif', '.tiff']:
+    if file_path.suffix.lower() == '.nd2':
+        try:
+            with bioformats.ImageReader(str(file_path)) as reader:
+                if reader.rdr.getImageCount() == 0:
+                    return False, "The ND2 file is empty or corrupted."
+            return True, ""
+        except Exception as e:
+            return False, f"Error reading ND2 file: {str(e)}"
+    elif file_path.suffix.lower() in ['.tif', '.tiff']:
         try:
             with tifffile.TiffFile(str(file_path)) as tif:
                 if len(tif.pages) == 0:
@@ -53,42 +94,23 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
     file_output_dir = output_dir / new_folder_name
     file_output_dir.mkdir(parents=True, exist_ok=True)
     
-    # For TIF stacks, get global min/max before processing frames
-    if file_path.suffix.lower() in ['.tif', '.tiff']:
+    if file_path.suffix.lower() == '.nd2':
+        # Process ND2 file using bioformats
+        with bioformats.ImageReader(str(file_path)) as reader:
+            metadata = bioformats.get_omexml_metadata(str(file_path))
+            ome = ET.fromstring(metadata)
+            pixels = ome.find('.//ome:Pixels', {'ome': 'http://www.openmicroscopy.org/Schemas/OME/2016-06'})
+            total_frames = int(pixels.get('SizeT'))
+            orig_width = int(pixels.get('SizeX'))
+            orig_height = int(pixels.get('SizeY'))
+            if fps is None:
+                fps = float(pixels.find('.//ome:Plane', {'ome': 'http://www.openmicroscopy.org/Schemas/OME/2016-06'}).get('DeltaT', 30))
+    elif file_path.suffix.lower() in ['.tif', '.tiff']:
+        # Process TIF stack
         with tifffile.TiffFile(str(file_path)) as tif:
-            # Read all frames to get global min/max
-            print("Calculating global min/max across all frames...")
-            global_min = float('inf')
-            global_max = float('-inf')
-            for page in tif.pages:
-                frame = page.asarray()
-                frame_min = np.min(frame)
-                frame_max = np.max(frame)
-                global_min = min(global_min, frame_min)
-                global_max = max(global_max, frame_max)
-            print(f"Global range: {global_min} to {global_max}")
-
             total_frames = len(tif.pages)
             first_page = tif.pages[0]
             orig_width, orig_height = first_page.shape[1], first_page.shape[0]
-
-            def process_tif_frame(frame):
-                if frame.dtype == np.uint16:
-                    # Linear scaling preserving relative intensities
-                    # First subtract the global minimum to start from zero
-                    # Then scale to use more of the 8-bit range while maintaining exact proportions
-                    frame_adjusted = frame - global_min
-                    scaling_factor = 255.0 / (global_max - global_min)
-                    frame_8bit = (frame_adjusted * scaling_factor).astype(np.uint8)
-                else:
-                    frame_8bit = frame
-
-                if len(frame_8bit.shape) == 2:
-                    frame_8bit = cv2.cvtColor(frame_8bit, cv2.COLOR_GRAY2BGR)
-
-                return frame_8bit
-
-
     else:
         # Process video
         cap = cv2.VideoCapture(str(file_path))
@@ -107,7 +129,7 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
     if fps is None and 'video_fps' in locals():
         fps = video_fps
     elif fps is None:
-        fps = 10  # Default fps for TIF stacks
+        fps = 10  # Default fps for TIF stacks and ND2 files if not specified
     
     # Process all frames
     expected_frame_numbers = range(total_frames)
@@ -146,7 +168,11 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
 
     def process_frame(frame_number):
         nonlocal frame_stats
-        if file_path.suffix.lower() in ['.tif', '.tiff']:
+        if file_path.suffix.lower() == '.nd2':
+            with bioformats.ImageReader(str(file_path)) as reader:
+                frame = reader.read(t=frame_number, rescale=False)
+                frame = process_nd2_frame(frame)
+        elif file_path.suffix.lower() in ['.tif', '.tiff']:
             with tifffile.TiffFile(str(file_path)) as tif:
                 frame = tif.pages[frame_number].asarray()
                 frame = process_tif_frame(frame)
@@ -168,7 +194,7 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
 
         frame_stats['new_frames'] += 1
         frame_stats['total_processed_frames'] += 1
-        if frame_stats['total_processed_frames'] % 100 == 0:  # Print every 100 frames
+        if frame_stats['total_processed_frames'] % 100 == 0:  # Print every 10 frames
             print(f"Processed frame: {frame_stats['total_processed_frames']}/{total_frames}")
         return str(frame_path)
 
@@ -201,7 +227,7 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
                     frame_paths.append(str(existing_frame))
                     frame_stats['existing_frames'] += 1
                 frame_stats['total_processed_frames'] += 1
-                if frame_stats['total_processed_frames'] % 100 == 0:  # Print every 100 frames
+                if frame_stats['total_processed_frames'] % 100 == 0:  # Print every 10 frames
                     print(f"Processed frame: {frame_stats['total_processed_frames']}/{total_frames}")
             else:
                 path = process_frame(fn)
@@ -273,14 +299,53 @@ def process_random_unprocessed_video(video_files_dir, output_dir):
 
     print(f"Processing video: {random_video}")
     process_file(random_video, output_dir)
-    print(f"Done processing video: {random_video}")
-    return random_video
 
 
 
+# Example usage
+video_files = "/home/lilly/phd/ria/data_original/AG"
+save_jpg_dir = "/home/lilly/phd/ria/data_foranalysis/videotojpg"
 
-video_files = "/home/lilly/phd/ria/data_original/AG_WT"
-save_jpg_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg"
+process_random_unprocessed_video(video_files, save_jpg_dir)
 
-vid = process_random_unprocessed_video(video_files, save_jpg_dir)
+vid = "/home/lilly/phd/ria/data_original/AG/MMH99_10s_20190306_02.tif"
+process_file(vid, save_jpg_dir)
+
+
+###ND2 stuff
+
+
+if __name__ == "__main__":
+    # Start Java VM
+    javabridge.start_vm(class_path=bioformats.JARS)
+
+    try:
+        # Example usage
+        file_path = '/home/maxime/prg/phd/ria/nt03.nd2'
+        output_dir = "/home/maxime/prg/phd/ria/tstvideo"
+
+        process_file(file_path, output_dir)
+
+    finally:
+        # Kill Java VM
+        javabridge.kill_vm()
+
+# Example usage
+file_path = '/home/maxime/prg/phd/ria/nt02.nd2'
+output_dir = "/home/maxime/prg/phd/ria/tstvideo"
+
+process_file(file_path, output_dir)
+
+
+import javabridge
+import bioformats
+
+javabridge.start_vm(class_path=bioformats.JARS)
+
+try:
+    with bioformats.ImageReader('/home/maxime/prg/phd/ria/nt02.nd2') as reader:
+        metadata = bioformats.get_omexml_metadata('/home/maxime/prg/phd/ria/nt02.nd2')
+        print(metadata)
+finally:
+    javabridge.kill_vm()
 

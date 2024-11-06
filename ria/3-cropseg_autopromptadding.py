@@ -104,11 +104,7 @@ def check_overlap(mask1, mask2):
     return overlap_pixels > 0, iou, overlap_pixels
 
 def check_distance(mask1, mask2, max_distance=10):
-    # First check if either mask is empty
-    if mask1.sum() == 0 or mask2.sum() == 0:
-        return True  # Return True to indicate masks are not distant (they're empty)
-    
-    # If neither mask is empty, proceed with distance check
+    # Dilate both masks
     dilated_mask1 = binary_dilation(mask1, iterations=max_distance)
     dilated_mask2 = binary_dilation(mask2, iterations=max_distance)
     
@@ -122,43 +118,27 @@ def analyze_masks(video_segments):
 
     for frame, mask_dict in video_segments.items():
         mask_ids = [mask_id for mask_id in mask_dict.keys() if mask_id is not None]
-        
-        # Track empty masks first
-        empty_masks = set()  # Keep track of which masks are empty
-        for mask_id in mask_ids:
+        for i in range(len(mask_ids)):
+            mask_id = mask_ids[i]
             mask = mask_dict[mask_id]
             if mask is not None:
                 mask_sum = mask.sum()
                 if mask_sum == 0:
                     results['empty'].setdefault(frame, []).append(mask_id)
-                    empty_masks.add(mask_id)
                 elif mask_sum >= 800:
                     results['high'].setdefault(frame, []).append(mask_id)
-
-        # Process overlaps
-        for i in range(len(mask_ids)):
-            mask_id = mask_ids[i]
-            if mask_id in empty_masks:  # Skip empty masks for overlap checking
-                continue
-                
-            mask = mask_dict[mask_id]
-            if mask is not None:
+            
                 # Check for overlaps with other masks in the same frame
                 for j in range(i + 1, len(mask_ids)):
                     other_mask_id = mask_ids[j]
-                    if other_mask_id in empty_masks:  # Skip empty masks
-                        continue
-                        
                     other_mask = mask_dict[other_mask_id]
                     if other_mask is not None:
                         is_overlapping, iou, overlap_pixels = check_overlap(mask, other_mask)
                         if is_overlapping:
                             results['overlapping'].setdefault(frame, []).append((mask_id, other_mask_id, iou, overlap_pixels))
         
-        # Check distance between object 3 and 4, but only if neither is empty
-        if (3 in mask_dict and 4 in mask_dict and 
-            mask_dict[3] is not None and mask_dict[4] is not None and 
-            3 not in empty_masks and 4 not in empty_masks):  # Added empty mask check
+        # Check distance between object 3 and 4
+        if 3 in mask_dict and 4 in mask_dict and mask_dict[3] is not None and mask_dict[4] is not None:
             if not check_distance(mask_dict[3], mask_dict[4]):
                 results['distant'].setdefault(frame, []).append((3, 4))
 
@@ -652,10 +632,11 @@ def get_random_unprocessed_video(crop_videos_dir, segmented_videos_dir):
     return os.path.join(crop_videos_dir, random.choice(unprocessed_videos))
 
 
-crop_videos_dir = '/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/'
-segmented_videos_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/ria_segmentation/'
+crop_videos_dir = '/home/lilly/phd/ria/data_foranalysis/riacrop/'
+segmented_videos_dir = '/home/lilly/phd/ria/data_analyzed/ria_segmentation/'
 
 video_dir = get_random_unprocessed_video(crop_videos_dir, segmented_videos_dir)
+video_dir = '/home/lilly/phd/ria/data_foranalysis/riacrop/AG-MMH99_10s_20190306_02_crop'
 print(f"Processing video: {video_dir}")
 
 prompt_dir = '/home/lilly/phd/ria/prompt_frames'
@@ -678,7 +659,7 @@ for frame_num in prompt_data:
 frame_names = sorted([p for p in os.listdir(video_dir) if p.lower().endswith(('.jpg', '.jpeg'))],
                      key=lambda p: int(os.path.splitext(p)[0]))
 
-#predictor.reset_state(inference_state)
+predictor.reset_state(inference_state)
 inference_state = predictor.init_state(video_path=video_dir)
 
 # Add prompts for each frame
@@ -694,7 +675,7 @@ for new_frame_num, original_frame_num in frame_mapping.items():
 prompt_frame_results = analyze_prompt_frames_immediate(video_dir, frame_mapping, prompt_data, inference_state, predictor)
 print_prompt_frame_analysis(prompt_frame_results)
 
-prompts_for_frame = check_prompt_data(25, prompt_data, video_dir, inference_state, frame_mapping)
+prompts_for_frame = check_prompt_data(17, prompt_data, video_dir, inference_state, frame_mapping)
 
 
 # Propagate in video
@@ -712,7 +693,7 @@ remove_prompt_frames_from_video(video_dir, frame_mapping)
 # Check results
 analyze_and_print_results(video_segments)
 
-overlay_predictions_on_frame(video_dir, 639, video_segments, alpha=0.99)
+overlay_predictions_on_frame(video_dir, 10, video_segments, alpha=0.99)
 
 #Make video with masks
 create_mask_overlay_video(
@@ -724,7 +705,7 @@ create_mask_overlay_video(
     alpha=0.99
 )
 
-output_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/ria_segmentation'
+output_dir = '/home/lilly/phd/ria/data_analyzed/ria_segmentation'
 filtered_video_segments = save_video_segments_to_h5(video_segments, video_dir, output_dir, frame_mapping)
 
 
@@ -734,17 +715,19 @@ filtered_video_segments = save_video_segments_to_h5(video_segments, video_dir, o
 
 
 ####Adjust prompts####
-prompt_data["10"]
+prompt_data["13"]
 
 
 # region [find prompts]
 new_prompts = {}
-new_prompt_frame = 203  #frame index
+new_prompt_frame = 630  #frame index
 #NRD
 ann_obj_id = 2  #object id
-points = np.array([[68., 45.], 
-                   [64, 45], [69, 50]], dtype=np.float32) #cropped frame nrd only
-labels = np.array([1, 0, 0], np.int32)
+#points = np.array([[277, 307]], dtype=np.float32) #full frame
+points = np.array([[44., 43.],
+                   [49, 45]], dtype=np.float32) #cropped frame nrd only
+labels = np.array([1,
+                   0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
     inference_state=inference_state,
@@ -767,10 +750,11 @@ plt.close()
 
 #NRV
 ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[42., 59.], [44., 54.],
-                   [46., 57.], [46, 52], [50, 65], [62, 58], [38, 66], [60, 46], [58, 55], [38, 63], [32, 77]], dtype=np.float32) #cropped frame nrv only
+points = np.array([[61., 52.], [65, 57],
+                   [59, 50], [68, 60], [67, 61], [70, 63]], dtype=np.float32) #cropped frame nrv only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], np.int32)
+labels = np.array([1, 1,
+                    0, 0, 0, 0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -795,10 +779,11 @@ plt.close()
 
 #LOOP
 ann_obj_id = 4  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[32., 74.], [35., 69.], 
-                   [40, 62], [37, 72], [43, 56], [35, 76], [31, 86], [37, 66], [53, 48], [33, 80]], dtype=np.float32) #cropped frame loop only
+points = np.array([[70., 67.],
+                   [68, 62], [69, 63], [69, 60]], dtype=np.float32) #cropped frame loop only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0], np.int32)
+labels = np.array([1,
+                   0, 0, 0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -820,10 +805,7 @@ for i, out_obj_id in enumerate(out_obj_ids):
 plt.savefig("tstclick.png")
 plt.close()
 
-
-
 #endregion
-
 
 def add_new_prompt(frame_number, video_dir, prompt_dir, prompt_data_file, prompts):
     """
@@ -878,7 +860,13 @@ def add_new_prompt(frame_number, video_dir, prompt_dir, prompt_data_file, prompt
     
     print(f"Added new prompt image {new_image_name} for frame {frame_number} and updated prompt data.")
 
-
+# Example of adding a new prompt (uncomment to use)
+# new_prompt_frame = 300  # Example frame number
+# new_prompts = {
+#     2: (np.array([[41., 70.]], dtype=np.float32), np.array([1], dtype=np.int32)),
+#     3: (np.array([[62., 81.], [66., 89.], [68., 92.], [69., 91.]], dtype=np.float32), np.array([1, 1, 0, 0], dtype=np.int32)),
+#     4: (np.array([[69., 93.], [74., 101.], [68., 90.]], dtype=np.float32), np.array([1, 1, 0], dtype=np.int32))
+# }
 add_new_prompt(new_prompt_frame, video_dir, prompt_dir, prompt_data_file, new_prompts)
 
 
@@ -929,9 +917,50 @@ def modify_prompt(frame_number, frame_mapping, prompt_data_file, new_prompts):
     
     print(f"Updated prompt data for video frame {frame_number} (original prompt frame {original_frame_number}).")
 
-
+# Example usage:
+# frame_to_modify = 300
+# updated_prompts = {
+#     2: (np.array([[45., 75.]], dtype=np.float32), np.array([1], dtype=np.int32)),
+#     3: (np.array([[62., 81.], [66., 89.], [70., 95.]], dtype=np.float32), np.array([1, 1, 0], dtype=np.int32)),
+#     5: (np.array([[80., 110.], [85., 115.]], dtype=np.float32), np.array([1, 0], dtype=np.int32))
+# }
 frame_to_modify = new_prompt_frame
 updated_prompts = new_prompts
 modify_prompt(frame_to_modify, frame_mapping, prompt_data_file, updated_prompts)
 
 
+
+###For later use
+
+def load_video_segments_from_h5(filename):
+    video_segments = {}
+    with h5py.File(filename, 'r') as f:
+        num_frames = f.attrs['num_frames']
+        object_ids = f.attrs['object_ids']
+        
+        # Convert 'None' back to None and others to int
+        object_ids = [None if obj_id == 'None' else int(obj_id) for obj_id in object_ids]
+        
+        for i in range(num_frames):
+            frame_idx = num_frames - 1 - i  # Reverse the frame index
+            video_segments[frame_idx] = {}
+            for obj_id in object_ids:
+                obj_id_str = str(obj_id) if obj_id is not None else 'None'
+                video_segments[frame_idx][obj_id] = f[f'masks/{obj_id_str}'][i]
+    
+    return video_segments
+
+output_dir = '/home/maxime/prg/phd/ria/data_analyzed/ria_segmentation'
+filename = 'ria-nt03_crop_riasegmentation.h5'
+full_path = os.path.join(output_dir, filename)
+loaded_video_segments = load_video_segments_from_h5(full_path)
+
+# Check if loaded data matches original
+assert len(loaded_video_segments) == len(video_segments), "Number of frames doesn't match"
+for frame_idx in video_segments:
+    assert frame_idx in loaded_video_segments, f"Frame {frame_idx} missing in loaded data"
+    for obj_id in video_segments[frame_idx]:
+        assert obj_id in loaded_video_segments[frame_idx], f"Object {obj_id} missing in frame {frame_idx}"
+        assert np.array_equal(video_segments[frame_idx][obj_id], loaded_video_segments[frame_idx][obj_id]), \
+               f"Mask for object {obj_id} in frame {frame_idx} doesn't match"
+print("Loaded data matches original data.")
