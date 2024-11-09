@@ -197,7 +197,25 @@ frame_masks = cleaned_distance_segments
 processed_masks = process_all_masks(frame_masks)
 
 
-
+def get_all_object_masks(processed_masks: Dict[int, Dict[int, np.ndarray]], 
+                        object_id: int) -> Dict[int, np.ndarray]:
+    """
+    Get all masks for a specific object across all frames.
+    
+    Args:
+        processed_masks: Dictionary mapping frame numbers to dictionaries of object masks
+                       {frame_num: {obj_id: mask}}
+        object_id: ID of the object to collect masks for
+    
+    Returns:
+        Dictionary mapping frame numbers to masks for the specified object
+        {frame_num: mask}
+    """
+    return {
+        frame_num: objects[object_id]
+        for frame_num, objects in processed_masks.items()
+        if object_id in objects
+    }
 
 def ensure_3d(mask: np.ndarray) -> np.ndarray:
     """Ensure mask is 3D with shape (1, h, w)."""
@@ -501,7 +519,7 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
 
 # Example usage:
 """
-image_dir = "/home/lilly/phd/ria/data_foranalysis/riacrop/AG-MMH99_10s_20190306_02_crop"
+image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190221_04_crop"
 masks_dict = final_masks
 output_path = "largest_segments_video_nonoverlapping.mp4"
 
