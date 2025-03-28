@@ -77,7 +77,7 @@ frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 inference_state = predictor.init_state(video_path=random_video_dir)
 
 
-points=np.array([[235, 345], [250, 330]], dtype=np.float32)
+points=np.array([[260, 345], [240, 342]], dtype=np.float32)
 labels=np.array([1, 1], np.int32)
 
 prompts = {}
@@ -102,6 +102,7 @@ for i, out_obj_id in enumerate(out_obj_ids):
     show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
 plt.savefig("tstclick.png")
 plt.close()
+
 
 
 video_segments = {}  # video_segments contains the per-frame segmentation results
@@ -239,7 +240,7 @@ process_frames_fixed_crop(random_video_dir, output_folder, video_segments, origi
 
 
 
-
+###Test crap
 
 video_segments[0][1][0]
 video_segments[1][1][0][:] = False

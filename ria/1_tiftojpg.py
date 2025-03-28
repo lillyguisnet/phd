@@ -8,7 +8,7 @@ import random
 import tqdm
 
 def get_supported_video_extensions():
-    return ['.avi', '.mp4', '.mov', '.mkv', '.wmv', '.flv']
+    return ['.avi', '.mp4', '.mov', '.mkv', '.wmv', '.flv', '.gif']
 
 def get_supported_image_extensions():
     return ['.png', '.jpg', '.jpeg', '.tif', '.tiff']
@@ -22,6 +22,16 @@ def check_file_readability(file_path):
             return True, ""
         except Exception as e:
             return False, f"Error reading TIF file: {str(e)}"
+    elif file_path.suffix.lower() == '.gif':
+        try:
+            cap = cv2.VideoCapture(str(file_path))
+            if not cap.isOpened():
+                return False, "OpenCV cannot open the GIF file."
+            ret = cap.read()[0]
+            cap.release()
+            return ret, "" if ret else "Cannot read frames from the GIF file."
+        except Exception as e:
+            return False, f"Error reading GIF file: {str(e)}"
     else:
         cap = cv2.VideoCapture(str(file_path))
         if not cap.isOpened():
@@ -280,7 +290,11 @@ def process_random_unprocessed_video(video_files_dir, output_dir):
 
 
 video_files = "/home/lilly/phd/ria/data_original/AG_WT"
+"/home/lilly/phd/ria/tst_free/original"
+
 save_jpg_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg"
+"/home/lilly/phd/ria/tst_free/tojpg"
+
 
 vid = process_random_unprocessed_video(video_files, save_jpg_dir)
 

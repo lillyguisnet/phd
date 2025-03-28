@@ -35,7 +35,7 @@ def load_video_segments_from_h5(filename):
 
 
 def get_random_unprocessed_video(segmented_videos_dir, cleaned_aligned_segments_dir):
-    all_videos = [d for d in os.listdir(segmented_videos_dir)]
+    all_videos = [os.path.splitext(d)[0] for d in os.listdir(segmented_videos_dir)]
     unprocessed_videos = [
         video for video in all_videos
         if not os.path.exists(os.path.join(cleaned_aligned_segments_dir, video + "_cleanedalignedsegments.h5"))
@@ -44,7 +44,7 @@ def get_random_unprocessed_video(segmented_videos_dir, cleaned_aligned_segments_
     if not unprocessed_videos:
         raise ValueError("All videos have been processed.")
     
-    return os.path.join(segmented_videos_dir, random.choice(unprocessed_videos))
+    return os.path.join(segmented_videos_dir, random.choice(unprocessed_videos) + ".h5")
 
 
 segmented_videos_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/ria_segmentation'
@@ -57,10 +57,126 @@ print(f"Processing video: {ria_segments}")
 loaded_video_segments = load_video_segments_from_h5(ria_segments)
 
 
+###Fill missing masks
+def fill_missing_masks(video_segments: Dict[int, Dict[int, np.ndarray]], required_ids: List[int] = [2, 3, 4]) -> Dict[int, Dict[int, np.ndarray]]:
+    """
+    Fill in missing masks by interpolating between the nearest available masks.
+    
+    Args:
+        video_segments: Dictionary of frame_number -> {object_id -> mask}
+        required_ids: List of object IDs that should be present in every frame
+    
+    Returns:
+        Dictionary with the same structure but with missing masks filled in
+    """
+    print("Checking for missing or empty masks...")
+    
+    # Create a copy to avoid modifying the original
+    filled_segments = {frame: masks.copy() for frame, masks in video_segments.items()}
+    
+    # Get sorted frame numbers
+    frames = sorted(video_segments.keys())
+    
+    # Track if any changes were made
+    any_changes_made = False
+    
+    # For each required object ID
+    for obj_id in required_ids:
+        # Find frames with missing masks (including empty masks)
+        missing_frames = [
+            frame for frame in frames 
+            if (obj_id not in video_segments[frame] or 
+                video_segments[frame][obj_id] is None or 
+                np.sum(video_segments[frame][obj_id]) == 0)  # Check if mask is empty
+        ]
+        
+        if not missing_frames:
+            continue
+            
+        any_changes_made = True
+        print(f"Found {len(missing_frames)} frames with missing masks for object {obj_id}")
+        
+        # Process each missing frame
+        for missing_frame in missing_frames:
+            # Find nearest previous frame with non-empty mask
+            prev_frame = None
+            prev_mask = None
+            for frame in reversed(frames[:frames.index(missing_frame)]):
+                if (obj_id in video_segments[frame] and 
+                    video_segments[frame][obj_id] is not None and 
+                    np.sum(video_segments[frame][obj_id]) > 0):
+                    prev_frame = frame
+                    prev_mask = video_segments[frame][obj_id]
+                    break
+            
+            # Find nearest next frame with non-empty mask
+            next_frame = None
+            next_mask = None
+            for frame in frames[frames.index(missing_frame) + 1:]:
+                if (obj_id in video_segments[frame] and 
+                    video_segments[frame][obj_id] is not None and 
+                    np.sum(video_segments[frame][obj_id]) > 0):
+                    next_frame = frame
+                    next_mask = video_segments[frame][obj_id]
+                    break
+            
+            # Interpolate mask based on available neighboring masks
+            if prev_mask is not None and next_mask is not None:
+                # Calculate weights based on distance
+                total_dist = next_frame - prev_frame
+                weight_next = (missing_frame - prev_frame) / total_dist
+                weight_prev = (next_frame - missing_frame) / total_dist
+                
+                # Interpolate between masks
+                interpolated_mask = (prev_mask * weight_prev + next_mask * weight_next) > 0.5
+                filled_segments[missing_frame][obj_id] = interpolated_mask
+                
+                print(f"Frame {missing_frame}: Interpolated mask {obj_id} using frames {prev_frame} and {next_frame}")
+                
+            elif prev_mask is not None:
+                # If only previous mask is available, use it
+                filled_segments[missing_frame][obj_id] = prev_mask
+                print(f"Frame {missing_frame}: Used previous mask {obj_id} from frame {prev_frame}")
+                
+            elif next_mask is not None:
+                # If only next mask is available, use it
+                filled_segments[missing_frame][obj_id] = next_mask
+                print(f"Frame {missing_frame}: Used next mask {obj_id} from frame {next_frame}")
+                
+            else:
+                print(f"Warning: Could not fill mask for object {obj_id} in frame {missing_frame} - no neighboring masks available")
+    
+    if not any_changes_made:
+        print("\nNo missing or empty masks found. All masks are present and non-empty!")
+        return filled_segments
+    
+    # Verify all required masks are present and non-empty
+    missing_after_fill = []
+    for frame in frames:
+        for obj_id in required_ids:
+            if (obj_id not in filled_segments[frame] or 
+                filled_segments[frame][obj_id] is None or 
+                np.sum(filled_segments[frame][obj_id]) == 0):  # Added empty mask check
+                missing_after_fill.append((frame, obj_id))
+    
+    if missing_after_fill:
+        print("\nWarning: Some masks could not be filled:")
+        for frame, obj_id in missing_after_fill:
+            print(f"Frame {frame}, Object {obj_id}")
+    else:
+        print("\nAll missing masks have been filled successfully!")
+    
+    return filled_segments
+
+# Add this line after loading the video segments and before starting the processing
+loaded_video_segments = fill_missing_masks(loaded_video_segments)
+
 
 ### Check for overlaps between the segments (Modify masks to remove overlapping pixels)
 def check_mask_overlap(loaded_video_segments):
     results = {}
+    total_frames = len(loaded_video_segments)
+    frames_with_overlap = 0
     
     for frame, masks in loaded_video_segments.items():
         overlap = False
@@ -74,6 +190,7 @@ def check_mask_overlap(loaded_video_segments):
                     overlap_count = np.sum(overlap_mask)
                     if overlap_count > 0:
                         overlap = True
+                        frames_with_overlap += 1
                         mask_combination.append((i+2, j+2, overlap_count))
         
         if overlap:
@@ -82,10 +199,16 @@ def check_mask_overlap(loaded_video_segments):
                 'mask_combination': mask_combination
             }
 
-    print("Overlap Results:")
-    for frame, result in results.items():
-        for combination in result['mask_combination']:
-            print(f"Frame {frame}:  Masks {combination[0]} and {combination[1]} overlap: {combination[2]} pixels")
+    print("\nOverlap Analysis Results:")
+    print(f"Total frames analyzed: {total_frames}")
+    
+    if results:
+        print(f"Found overlaps in {frames_with_overlap} frames:")
+        for frame, result in results.items():
+            for combination in result['mask_combination']:
+                print(f"Frame {frame}:  Masks {combination[0]} and {combination[1]} overlap: {combination[2]} pixels")
+    else:
+        print("No overlaps found between any masks in any frames!")
 
     return results
 
@@ -221,7 +344,7 @@ print_segment_analysis_results(discontinuous_results, continuous_results, segmen
 
 
 
-### Clean the segments
+## Clean the segments
     # Filter to keep only masks 2, 3, and 4
     # Remove small components (min size 3)
 def remove_small_components(mask, min_size=3):
@@ -423,6 +546,7 @@ analysis_results = analyze_movement_results(movement_results)
 print_movement_analysis_summary(analysis_results)
 
 
+
 ###Remove pixels in mask4 that are within min_distance pixels from any pixel in mask3.
 def filter_by_distance(mask3, mask4, min_distance=6, min_pixels=3):
     """
@@ -490,7 +614,7 @@ def filter_by_distance(mask3, mask4, min_distance=6, min_pixels=3):
     if filtered_mask4.shape != mask4.shape:
         raise ValueError(f"Output shape {filtered_mask4.shape} doesn't match input shape {mask4.shape}")
     
-    return filtered_mask4
+    return filtered_mask4, np.sum(mask4) - np.sum(filtered_mask4)  # Return pixels removed count
 
 
 def master_clean_segments(segments, min_size=3, min_distance=6, min_pixels=3):
@@ -513,23 +637,72 @@ def master_clean_segments(segments, min_size=3, min_distance=6, min_pixels=3):
     dict
         Cleaned segments
     """
+    # Initialize tracking dictionaries
+    modifications = {
+        'small_components': {2: [], 3: [], 4: []},
+        'distance_filtered': [],
+        'pixels_removed': {2: {}, 3: {}, 4: {}}
+    }
+    
     # Step 1: Filter to keep only masks 2, 3, and 4
     cleaned_segments = filter_masks(segments)
     
     # Step 2: Remove small components
     for frame, masks in cleaned_segments.items():
         for mask_id, mask in masks.items():
-            cleaned_segments[frame][mask_id] = remove_small_components(mask, min_size)
+            original_pixels = np.sum(mask)
+            cleaned_mask = remove_small_components(mask, min_size)
+            pixels_removed = np.sum(mask) - np.sum(cleaned_mask)
+            
+            if pixels_removed > 0:
+                modifications['small_components'][mask_id].append(frame)
+                modifications['pixels_removed'][mask_id][frame] = pixels_removed
+                
+            cleaned_segments[frame][mask_id] = cleaned_mask
     
     # Step 3: Filter mask4 based on distance from mask3
     for frame, masks in cleaned_segments.items():
         if 3 in masks and 4 in masks:
-            cleaned_segments[frame][4] = filter_by_distance(
+            filtered_mask4, pixels_removed = filter_by_distance(
                 masks[3],
                 masks[4],
                 min_distance=min_distance,
                 min_pixels=min_pixels
             )
+            if pixels_removed > 0:
+                modifications['distance_filtered'].append(frame)
+                if frame in modifications['pixels_removed'][4]:
+                    modifications['pixels_removed'][4][frame] += pixels_removed
+                else:
+                    modifications['pixels_removed'][4][frame] = pixels_removed
+                    
+            cleaned_segments[frame][4] = filtered_mask4
+    
+    # Print summary of modifications
+    print("\nSegment Cleaning Summary:")
+    print("\nSmall Components Removed:")
+    for mask_id in [2, 3, 4]:
+        modified_frames = modifications['small_components'][mask_id]
+        if modified_frames:
+            print(f"  Mask {mask_id}:")
+            print(f"    Modified frames: {sorted(modified_frames)}")
+            total_pixels = sum(modifications['pixels_removed'][mask_id].get(frame, 0) 
+                             for frame in modified_frames)
+            avg_pixels = total_pixels / len(modified_frames)
+            print(f"    Average pixels removed per modified frame: {avg_pixels:.2f}")
+        else:
+            print(f"  Mask {mask_id}: No frames modified")
+            
+    print("\nDistance Filtering (Mask 4):")
+    distance_filtered_frames = modifications['distance_filtered']
+    if distance_filtered_frames:
+        print(f"  Modified frames: {sorted(distance_filtered_frames)}")
+        distance_pixels = sum(modifications['pixels_removed'][4].get(frame, 0) 
+                            for frame in distance_filtered_frames)
+        avg_distance_pixels = distance_pixels / len(distance_filtered_frames)
+        print(f"  Average pixels removed per modified frame: {avg_distance_pixels:.2f}")
+    else:
+        print("  No frames modified")
     
     return cleaned_segments
 
@@ -674,7 +847,7 @@ def process_all_masks(frame_masks: Dict) -> Dict:
     processed_masks = {}
     
     # Process each object separately
-    for object_id in object_ids:
+    for object_id in tqdm(object_ids, desc="Processing objects"):
         # Find the largest mask for this object
         largest_mask, frame_num_largest = find_largest_mask_for_object(frame_masks, object_id)
         
@@ -928,9 +1101,7 @@ final_masks = remove_overlaps_from_masks(processed_masks)
 
 
 
-
-
-
+#Save clean aligned segments to h5
 def save_cleaned_segments_to_h5(cleaned_segments, filename):
     # Create the output filename
     base_name = os.path.basename(filename)
@@ -1157,9 +1328,9 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
 
 # Example usage:
 """
-image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190221_04_crop"
-masks_dict = final_masks
-output_path = "largest_segments_video_nonoverlapping.mp4"
+image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190305_04_crop"
+masks_dict = loaded_video_segments
+output_path = "filled_segments_video.mp4"
 
 create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=1)
 """

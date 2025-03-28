@@ -35,17 +35,17 @@ def load_cleaned_segments_from_h5(filename):
     return cleaned_segments
 
 def get_random_unprocessed_video(cleaned_aligned_segments_dir, final_data_dir):
-    all_videos = [d for d in os.listdir(cleaned_aligned_segments_dir)]
+    all_videos = [os.path.splitext(d)[0] for d in os.listdir(cleaned_aligned_segments_dir)]
     unprocessed_videos = [
         video for video in all_videos
-        if not os.path.exists(os.path.join(final_data_dir, video + "_cleanedalignedsegments.h5"))
+        if not any(video[:video.find('crop')] in f 
+                  for f in os.listdir(final_data_dir))
     ]
     
     if not unprocessed_videos:
         raise ValueError("All videos have been processed.")
     
-    return os.path.join(cleaned_aligned_segments_dir, random.choice(unprocessed_videos))
-
+    return os.path.join(cleaned_aligned_segments_dir, random.choice(unprocessed_videos) + ".h5")
 
 cleaned_aligned_segments_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/cleaned_aligned_segments'
 final_data_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/final_data'
@@ -267,6 +267,7 @@ def save_brightness_and_side_data(df_wide_brightness_and_background, cleaned_seg
     print(df_wide_brightness_and_background.describe())
     print("side_position unique values:", df_wide_brightness_and_background['side_position'].unique())
     print(df_wide_brightness_and_background['side_position'].value_counts())
+    print(f"Data saved to: {output_filename}")
 
     return df_wide_brightness_and_background
 

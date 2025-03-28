@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("/home/maxime/prg/phd/segment-anything-2")
+sys.path.append("/home/lilly/phd/segment-anything-2")
 
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -9,6 +9,7 @@ import torch
 import pickle
 import shutil
 from pathlib import Path
+import cv2
 
 torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
 
@@ -42,8 +43,10 @@ def show_points(coords, labels, ax, marker_size=26):
     ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)   
 
 
-video_dir = '/home/maxime/prg/phd/ria/tstvideo/ria-nt03_crop'
+video_dir = "/home/lilly/phd/ria/tst_free/tojpg/original-2"
+'/home/maxime/prg/phd/ria/tstvideo/ria-nt03_crop'
 
+#region [add prompt frames]
 ##Add prompt frames
 frame_names = [
     p for p in os.listdir(video_dir)
@@ -178,7 +181,7 @@ largest_frame_number = max(int(os.path.splitext(p)[0]) for p in frame_names)
 prompt_frame_name = f"{largest_frame_number+1:06d}.jpg"
 shutil.copy(prompt_frame, os.path.join(video_dir, prompt_frame_name))
 
-
+#endregion [add prompt frames]
 
 ###Set up the inference state###
 # scan all the jpg frame names in this directory
@@ -1209,6 +1212,91 @@ plt.close()
 #endregion [add prompt frame 11]
 
 
+###Test free
+###Add prompts to 11th prompt frame###
+prompts = {}
+#NRD
+ann_frame_idx = 200  #frame index
+ann_obj_id = 2  #object id
+#points = np.array([[277, 307]], dtype=np.float32) #full frame
+points = np.array([[31, 40], [40, 40]], dtype=np.float32) #cropped frame nrd only
+labels = np.array([1, 0], np.int32)
+prompts[ann_obj_id] = points, labels
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+# show the results on the current (interacted) frame
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+for i, out_obj_id in enumerate(out_obj_ids):
+    show_points(*prompts[out_obj_id], plt.gca())
+    show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
+plt.savefig("tstclick.png")
+plt.close()
+
+
+#NRV
+ann_frame_idx = 200  # the frame index we interact with
+ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
+points = np.array([[42, 21], [40, 40], [48, 19]], dtype=np.float32) #cropped frame nrv only
+# for labels, `1` means positive click and `0` means negative click
+labels = np.array([1, 0, 0], np.int32)
+prompts[ann_obj_id] = points, labels
+# `add_new_points` returns masks for all objects added so far on this interacted frame
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+
+# show the results on the current (interacted) frame on all objects
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+for i, out_obj_id in enumerate(out_obj_ids):
+    show_points(*prompts[out_obj_id], plt.gca())
+    show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
+plt.savefig("tstclick.png")
+plt.close()
+
+
+#LOOP
+ann_frame_idx = 803  # the frame index we interact with
+ann_obj_id = 4  # give a unique id to each object we interact with (it can be any integers)
+points = np.array([[31, 15], [34, 8],
+                   [31, 17], [30, 16], [31, 16] ], dtype=np.float32) #cropped frame loop only
+# for labels, `1` means positive click and `0` means negative click
+labels = np.array([1, 1, 
+                   0, 0, 0], np.int32)
+prompts[ann_obj_id] = points, labels
+# `add_new_points` returns masks for all objects added so far on this interacted frame
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+
+# show the results on the current (interacted) frame on all objects
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+for i, out_obj_id in enumerate(out_obj_ids):
+    show_points(*prompts[out_obj_id], plt.gca())
+    show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
+plt.savefig("tstclick.png")
+plt.close()
 
 
 
@@ -1219,6 +1307,10 @@ for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
         out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
     for i, out_obj_id in enumerate(out_obj_ids)
 }
+
+# Save video segments to pickle file
+with open('video_segments_free2.pkl', 'wb') as f:
+    pickle.dump(video_segments, f)
     
 
 empty_masks = {}
@@ -1350,6 +1442,11 @@ for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
         out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
     for i, out_obj_id in enumerate(out_obj_ids)
 }
+
+# Save video_segments to pickle file
+with open('video_segments_free1920.pkl', 'wb') as f:
+    pickle.dump(video_segments, f)
+
     
 
 empty_masks = {}
@@ -1408,7 +1505,7 @@ import numpy as np
 import os
 import torch
 
-output_video_path = "crop_promptframe_reverse_MHnt03.mp4"
+output_video_path = "free2.mp4"
 
 # Predefined list of visually distinct colors
 COLORS = [
@@ -1471,54 +1568,75 @@ def overlay_masks_on_image(image_path, masks, colors, alpha=0.99):
     
     return overlaid_image
 
-# Prepare the video writer
-
-frame = cv2.imread(os.path.join(video_dir, frame_names[0]))
-if frame is None:
-    raise ValueError(f"Could not read first frame from {os.path.join(video_dir, frame_names[0])}")
-height, width, _ = frame.shape
-fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-out = cv2.VideoWriter(output_video_path, fourcc, 10, (width, height))
-
-# Assign colors to each unique mask ID
-all_mask_ids = set()
-for masks in video_segments.values():
-    all_mask_ids.update(masks.keys())
-colors = {}
-for i, mask_id in enumerate(all_mask_ids):
-    colors[mask_id] = COLORS[i % len(COLORS)]
-
-# Process each frame
-for frame_idx in range(len(frame_names)):
-    print(frame_idx)
-    image_path = os.path.join(video_dir, frame_names[frame_idx])
+def create_overlay_video(output_video_path, video_dir, frame_names, video_segments, reverse=False, fps=10, alpha=0.99):
+    """
+    Create an overlay video with mask segmentations.
     
-    try:
-        if frame_idx in video_segments:
-            masks = video_segments[frame_idx]
-            overlaid_frame = overlay_masks_on_image(image_path, masks, colors)
-        else:
-            # If no segmentation for this frame, use the original image
-            overlaid_frame = cv2.imread(image_path)
-            if overlaid_frame is None:
-                raise ValueError(f"Could not read image from {image_path}")
-            overlaid_frame = cv2.cvtColor(overlaid_frame, cv2.COLOR_BGR2RGB)
+    Args:
+        output_video_path (str): Path where the output video will be saved
+        video_dir (str): Directory containing the frame images
+        frame_names (list): List of frame filenames
+        video_segments (dict): Dictionary containing mask segments
+        reverse (bool): If True, create video in reverse order
+        fps (int): Frames per second for output video
+        alpha (float): Transparency of the mask overlay (0-1)
+    """
+    # Prepare the video writer
+    frame = cv2.imread(os.path.join(video_dir, frame_names[0]))
+    if frame is None:
+        raise ValueError(f"Could not read first frame from {os.path.join(video_dir, frame_names[0])}")
+    height, width, _ = frame.shape
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+
+    # Assign colors to each unique mask ID
+    all_mask_ids = set()
+    for masks in video_segments.values():
+        all_mask_ids.update(masks.keys())
+    colors = {mask_id: COLORS[i % len(COLORS)] for i, mask_id in enumerate(all_mask_ids)}
+
+    # Create frame index list (normal or reversed)
+    frame_indices = range(len(frame_names))
+    if reverse:
+        frame_indices = reversed(frame_indices)
+
+    # Process each frame
+    for frame_idx in frame_indices:
+        print(f"Processing frame {frame_idx}")
+        image_path = os.path.join(video_dir, frame_names[frame_idx])
         
-        # Write the frame to the video
-        out.write(cv2.cvtColor(overlaid_frame, cv2.COLOR_RGB2BGR))
-    except Exception as e:
-        print(f"Error processing frame {frame_idx}: {str(e)}")
-        # If there's an error, write the original frame
-        original_frame = cv2.imread(image_path)
-        if original_frame is not None:
-            out.write(original_frame)
-        else:
-            print(f"Could not read original frame {frame_idx}")
+        try:
+            if frame_idx in video_segments:
+                masks = video_segments[frame_idx]
+                overlaid_frame = overlay_masks_on_image(image_path, masks, colors, alpha)
+            else:
+                # If no segmentation for this frame, use the original image
+                overlaid_frame = cv2.imread(image_path)
+                if overlaid_frame is None:
+                    raise ValueError(f"Could not read image from {image_path}")
+                overlaid_frame = cv2.cvtColor(overlaid_frame, cv2.COLOR_BGR2RGB)
+            
+            # Write the frame to the video
+            out.write(cv2.cvtColor(overlaid_frame, cv2.COLOR_RGB2BGR))
+        except Exception as e:
+            print(f"Error processing frame {frame_idx}: {str(e)}")
+            # If there's an error, write the original frame
+            original_frame = cv2.imread(image_path)
+            if original_frame is not None:
+                out.write(original_frame)
+            else:
+                print(f"Could not read original frame {frame_idx}")
 
-# Release the video writer
-out.release()
+    # Release the video writer
+    out.release()
+    print(f"Video saved to {output_video_path}")
 
-print(f"Video saved to {output_video_path}")
+# Example usage:
+# Forward video
+create_overlay_video("free1.mp4", video_dir, frame_names, video_segments, reverse=False)
+
+# Reverse video
+create_overlay_video("free2_reverse.mp4", video_dir, frame_names, video_segments, reverse=True)
 
 
 

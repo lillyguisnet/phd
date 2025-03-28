@@ -485,6 +485,7 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
     
     best_angle_result = None
     max_angle_magnitude = 0
+    debug_info = []
     
     for head_section in head_sections:
         head_end_idx = max(2, int(head_section * len(norm_points)))
@@ -502,6 +503,7 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
         body_mag = np.linalg.norm(body_vector)
         
         if head_mag < min_vector_length or body_mag < min_vector_length:
+            debug_info.append(f"Section {head_section}: Vector too short - head_mag={head_mag:.2f}, body_mag={body_mag:.2f}")
             continue
         
         dot_product = np.dot(head_vector, body_vector)
@@ -516,6 +518,7 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
         if prev_angle is not None:
             angle_change = abs(angle_deg - prev_angle)
             if angle_change > 25:
+                debug_info.append(f"Section {head_section}: Angle change too large - {angle_change:.2f} degrees")
                 continue
         
         if abs(angle_deg) > max_angle_magnitude:
@@ -536,7 +539,7 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
     if best_angle_result is None:
         return {
             'angle_degrees': prev_angle if prev_angle is not None else 0,
-            'error': 'No valid angle found',
+            'error': f"No valid angle found - Debug info: {'; '.join(debug_info)}",
             'head_mag': 0,
             'body_mag': 0,
             'bend_location': 0,
@@ -806,6 +809,7 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
     """
     # First pass: Calculate initial angles
     initial_data = []
+    dropped_frames = []
     prev_angles = {}
     
     for frame_idx in sorted(truncated_skeletons.keys()):
@@ -823,16 +827,27 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
                 straight_threshold=straight_threshold
             )
             
-            if result['angle_degrees'] is not None and result['error'] is None:
-                prev_angles[obj_id] = result['angle_degrees']
-                
-                initial_data.append({
+            if result['angle_degrees'] is None or result['error'] is not None:
+                dropped_frames.append({
                     'frame': frame_idx,
                     'object_id': obj_id,
-                    'angle_degrees': result['angle_degrees'],
-                    'head_mag': result['head_mag'],
-                    'body_mag': result['body_mag']
+                    'reason': result['error']
                 })
+                continue
+                
+            prev_angles[obj_id] = result['angle_degrees']
+                
+            initial_data.append({
+                'frame': frame_idx,
+                'object_id': obj_id,
+                'angle_degrees': result['angle_degrees'],
+                'head_mag': result['head_mag'],
+                'body_mag': result['body_mag']
+            })
+    
+    print(f"Dropped {len(dropped_frames)} frames")
+    for drop in dropped_frames:  # Show first 10 dropped frames
+        print(f"Frame {drop['frame']}: {drop['reason']}")
     
     # Convert to DataFrame and apply head angle smoothing
     initial_df = pd.DataFrame(initial_data)
@@ -1215,12 +1230,12 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
 
 
 """
-video_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg/AG_WT-MMH99_10s_20190221_04"
+video_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg/AG_WT-MMH99_10s_20190220_04"
 image_dir = video_dir
 bottom_masks = head_segments
 top_masks = truncated_skeletons
 angle_results = merged_df
-output_path = "head_skeleton_angles_video.mp4"
+output_path = "head_skeleton_angles_video2.mp4"
 
 create_layered_mask_video(
     image_dir=image_dir,

@@ -46,7 +46,7 @@ def get_random_unprocessed_video(parent_dir, head_segmentation_dir):
     all_videos = [d for d in os.listdir(parent_dir) if os.path.isdir(os.path.join(parent_dir, d))]
     unprocessed_videos = [
         video for video in all_videos
-        if not os.path.exists(os.path.join(head_segmentation_dir, video + "_headsegmentation"))
+        if not os.path.exists(os.path.join(head_segmentation_dir, video + "_headsegmentation.h5"))
     ]
     
     if not unprocessed_videos:
@@ -98,14 +98,28 @@ plt.savefig("tstclick.png")
 plt.close()
 
 
+
 video_segments = {}  # video_segments contains the per-frame segmentation results
 for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
 #for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=ann_frame_idx, reverse=True):
     video_segments[out_frame_idx] = {
         out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-    for i, out_obj_id in enumerate(out_obj_ids)
-}
-    
+        for i, out_obj_id in enumerate(out_obj_ids)
+    }
+
+# Check for missing or empty masks across all frames
+all_ok = True
+for frame_idx, frame_masks in video_segments.items():
+    for obj_id in [2]:  # Expected object IDs
+        if obj_id not in frame_masks:
+            print(f"Warning: Object {obj_id} missing in frame {frame_idx}")
+            all_ok = False
+        elif not np.any(frame_masks[obj_id]):
+            print(f"Warning: Mask for object {obj_id} is empty in frame {frame_idx}")
+            all_ok = False
+if all_ok:
+    print("All frames contain valid masks for object 2")
+
 
 
 def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):

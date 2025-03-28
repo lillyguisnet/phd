@@ -27,6 +27,7 @@ sam2_checkpoint = "./segment-anything-2/checkpoints/sam2_hiera_large.pt"
 model_cfg = "sam2_hiera_l.yaml"
 predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
 
+
 def show_mask(mask, ax, obj_id=None, random_color=False):
     color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0) if random_color else \
             np.array([*plt.get_cmap("tab10")(0 if obj_id is None else obj_id)[:3], 0.6])
@@ -39,8 +40,6 @@ def show_points(coords, labels, ax, marker_size=26):
     neg_points = coords[labels==0]
     ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
     ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
-
-
 
 def add_prompt_frames_to_video(video_dir, prompt_dir):
     existing_frames = [f for f in os.listdir(video_dir) if f.lower().endswith(('.jpg', '.jpeg'))]
@@ -449,6 +448,7 @@ def check_prompt_data(frame_idx, prompt_data, video_dir, inference_state, frame_
             show_points(points, labels, plt.gca())
             show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)   
         plt.savefig(f"prompt_frame_data_check.png")
+        print(f"Prompt frame data check saved to prompt_frame_data_check.png")
         plt.close()      
         time.sleep(0.01)  # Optimal delay between iterations for concurrency
 
@@ -651,21 +651,201 @@ def get_random_unprocessed_video(crop_videos_dir, segmented_videos_dir):
     
     return os.path.join(crop_videos_dir, random.choice(unprocessed_videos))
 
-
+##Get random video to process
 crop_videos_dir = '/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/'
 segmented_videos_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/ria_segmentation/'
-
 video_dir = get_random_unprocessed_video(crop_videos_dir, segmented_videos_dir)
 print(f"Processing video: {video_dir}")
 
-prompt_dir = '/home/lilly/phd/ria/prompt_frames'
-prompt_data_file = '/home/lilly/phd/ria/prompt_data.json'
+video_name = video_dir.split('/')[-1]
+prompt_dir = os.path.join('/home/lilly/phd/ria/', f'promptframes_{video_name}')
+prompt_data_path = os.path.join("/home/lilly/phd/ria", f'promptdata_{video_name}.json')
+
+
+#region [add or modify prompts]
+
+frame_names = sorted([f for f in os.listdir(video_dir) if f.lower().endswith(('.jpg', '.jpeg'))],
+                    key=lambda x: int(os.path.splitext(x)[0]))
+inference_state = predictor.init_state(video_path=video_dir)
+
+
+#region [first prompt]
+##Create prompt frame directory
+if os.path.exists(prompt_dir):
+    print(f"Warning: Prompt frames directory {prompt_dir} already exists. Using existing directory.")
+else:
+    os.makedirs(prompt_dir)
+    print(f"Created prompt frames directory: {prompt_dir}")
+##Get the last frame of video_dir
+last_frame = frame_names[-1]
+last_frame_num = int(os.path.splitext(last_frame)[0])
+frame_to_prompt = last_frame_num
+#endregion
+
+
+frame_to_prompt = 35
+
+
+prompts = {}
+#NRD
+ann_frame_idx = frame_to_prompt  #frame index
+ann_obj_id = 2  #object id
+#points = np.array([[277, 307]], dtype=np.float32) #full frame
+points = np.array([[41, 38]], dtype=np.float32) #cropped frame nrd only
+labels = np.array([1], np.int32)
+prompts[ann_obj_id] = points, labels
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+# show the results on the current (interacted) frame
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+for i, out_obj_id in enumerate(out_obj_ids):
+    show_points(*prompts[out_obj_id], plt.gca())
+    show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
+plt.savefig("tstclick.png")
+plt.close()
+
+
+#NRV
+ann_frame_idx = frame_to_prompt  # the frame index we interact with
+ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
+points = np.array([[68, 55],
+                   [74, 65]], dtype=np.float32) #cropped frame nrv only
+# for labels, `1` means positive click and `0` means negative click
+labels = np.array([1, 0], np.int32)
+prompts[ann_obj_id] = points, labels
+# `add_new_points` returns masks for all objects added so far on this interacted frame
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+
+# show the results on the current (interacted) frame on all objects
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+for i, out_obj_id in enumerate(out_obj_ids):
+    show_points(*prompts[out_obj_id], plt.gca())
+    show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
+plt.savefig("tstclick.png")
+plt.close()
+
+
+#LOOP
+ann_frame_idx = frame_to_prompt  # the frame index we interact with
+ann_obj_id = 4  # give a unique id to each object we interact with (it can be any integers)
+points = np.array([[75, 75]], dtype=np.float32) #cropped frame loop only
+# for labels, `1` means positive click and `0` means negative click
+labels = np.array([1], np.int32)
+prompts[ann_obj_id] = points, labels
+# `add_new_points` returns masks for all objects added so far on this interacted frame
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+
+# show the results on the current (interacted) frame on all objects
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+for i, out_obj_id in enumerate(out_obj_ids):
+    show_points(*prompts[out_obj_id], plt.gca())
+    show_mask((out_mask_logits[i] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_id)
+plt.savefig("tstclick.png")
+plt.close()
+
+
+
+##Add prompt frame to prompt directory and prompt data file
+def add_new_prompt(frame_number, video_dir, prompt_dir, prompt_data_file, prompts):
+    """
+    Add a new prompt image and its associated data based on a frame number from the video directory.
+    
+    :param frame_number: Number of the frame to be used as a prompt
+    :param video_dir: Directory containing the video frames
+    :param prompt_dir: Directory where prompt images are stored
+    :param prompt_data_file: Path to the JSON file containing prompt data
+    :param prompts: Dictionary containing prompt data in the format {obj_id: (points, labels)}
+    """
+    # Ensure directories exist
+    os.makedirs(prompt_dir, exist_ok=True)
+    
+    # Find the correct frame in the video directory
+    frame_name = f"{frame_number:06d}.jpg"  # Assuming 6-digit zero-padded frame numbers
+    source_frame_path = os.path.join(video_dir, frame_name)
+    
+    if not os.path.exists(source_frame_path):
+        raise FileNotFoundError(f"Frame {frame_name} not found in {video_dir}")
+
+    # Load existing prompt data
+    if os.path.exists(prompt_data_file):
+        with open(prompt_data_file, 'r') as f:
+            existing_prompts = json.load(f)
+    else:
+        existing_prompts = {}
+    
+    # Determine the new prompt number
+    existing_numbers = [int(num) for num in existing_prompts.keys()]
+    new_number = max(existing_numbers) + 1 if existing_numbers else 1
+    
+    # Copy the frame to the prompt directory with the new number
+    new_image_name = f"{new_number}.jpg"
+    new_image_path = os.path.join(prompt_dir, new_image_name)
+    shutil.copy(source_frame_path, new_image_path)
+    
+    # Transform the prompts data into the required format for JSON
+    new_prompt_data = {}
+    for obj_id, (points, labels) in prompts.items():
+        new_prompt_data[str(obj_id)] = {
+            "points": points.tolist(),
+            "labels": labels.tolist()
+        }
+    
+    # Add the new prompt data to the existing prompts dictionary
+    existing_prompts[str(new_number)] = new_prompt_data
+    
+    # Save the updated prompt data back to the JSON file
+    with open(prompt_data_file, 'w') as f:
+        json.dump(existing_prompts, f, indent=2)
+    
+    print(f"Added new prompt image {new_image_name} for frame {frame_number} and updated prompt data.")
+
+
+add_new_prompt(frame_to_prompt, video_dir, prompt_dir, prompt_data_path, prompts)
+
+
+
+#endregion
+
+#region [add prompt frames to video]
 
 # Add prompt frames to the video directory
 frame_mapping = add_prompt_frames_to_video(video_dir, prompt_dir)
 
+# Get all frame names from the video directory
+frame_names = sorted([p for p in os.listdir(video_dir) if p.lower().endswith(('.jpg', '.jpeg'))],
+                     key=lambda p: int(os.path.splitext(p)[0]))
+
+#predictor.reset_state(inference_state)
+inference_state = predictor.init_state(video_path=video_dir)
+
 # Load prompt data from JSON file
-with open(prompt_data_file, 'r') as f:
+with open(prompt_data_path, 'r') as f:
     prompt_data = json.load(f)
 
 # Convert loaded data to appropriate numpy arrays
@@ -674,12 +854,6 @@ for frame_num in prompt_data:
         prompt_data[frame_num][obj_id]['points'] = np.array(prompt_data[frame_num][obj_id]['points'], dtype=np.float32)
         prompt_data[frame_num][obj_id]['labels'] = np.array(prompt_data[frame_num][obj_id]['labels'], dtype=np.int32)
 
-# Get all frame names from the video directory
-frame_names = sorted([p for p in os.listdir(video_dir) if p.lower().endswith(('.jpg', '.jpeg'))],
-                     key=lambda p: int(os.path.splitext(p)[0]))
-
-#predictor.reset_state(inference_state)
-inference_state = predictor.init_state(video_path=video_dir)
 
 # Add prompts for each frame
 for new_frame_num, original_frame_num in frame_mapping.items():
@@ -694,10 +868,12 @@ for new_frame_num, original_frame_num in frame_mapping.items():
 prompt_frame_results = analyze_prompt_frames_immediate(video_dir, frame_mapping, prompt_data, inference_state, predictor)
 print_prompt_frame_analysis(prompt_frame_results)
 
-prompts_for_frame = check_prompt_data(25, prompt_data, video_dir, inference_state, frame_mapping)
+prompts_for_frame = check_prompt_data(2, prompt_data, video_dir, inference_state, frame_mapping)
+
+#endregion
 
 
-# Propagate in video
+### Propagate in video
 video_segments = {}
 last_frame_idx = max(frame_mapping.keys())
 for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=last_frame_idx, reverse=True):
@@ -706,13 +882,11 @@ for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
         for i, out_obj_id in enumerate(out_obj_ids)
     }
 
-# Remove prompt frames from the video directory
-remove_prompt_frames_from_video(video_dir, frame_mapping)
 
 # Check results
 analyze_and_print_results(video_segments)
 
-overlay_predictions_on_frame(video_dir, 639, video_segments, alpha=0.99)
+overlay_predictions_on_frame(video_dir, 2, video_segments, alpha=0.99)
 
 #Make video with masks
 create_mask_overlay_video(
@@ -724,6 +898,9 @@ create_mask_overlay_video(
     alpha=0.99
 )
 
+# Remove prompt frames from the video directory
+remove_prompt_frames_from_video(video_dir, frame_mapping)
+
 output_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/ria_segmentation'
 filtered_video_segments = save_video_segments_to_h5(video_segments, video_dir, output_dir, frame_mapping)
 
@@ -734,17 +911,16 @@ filtered_video_segments = save_video_segments_to_h5(video_segments, video_dir, o
 
 
 ####Adjust prompts####
-prompt_data["10"]
+prompt_data["2"]
 
 
 # region [find prompts]
 new_prompts = {}
-new_prompt_frame = 203  #frame index
+new_prompt_frame = 614  #frame index
 #NRD
 ann_obj_id = 2  #object id
-points = np.array([[68., 45.], 
-                   [64, 45], [69, 50]], dtype=np.float32) #cropped frame nrd only
-labels = np.array([1, 0, 0], np.int32)
+points = np.array([[68., 41.]], dtype=np.float32) #cropped frame nrd only
+labels = np.array([1], np.int32)
 new_prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
     inference_state=inference_state,
@@ -767,10 +943,10 @@ plt.close()
 
 #NRV
 ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[42., 59.], [44., 54.],
-                   [46., 57.], [46, 52], [50, 65], [62, 58], [38, 66], [60, 46], [58, 55], [38, 63], [32, 77]], dtype=np.float32) #cropped frame nrv only
+points = np.array([[46., 45.],
+                   [50, 55], [58, 45], [54, 48]], dtype=np.float32) #cropped frame nrv only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], np.int32)
+labels = np.array([1, 0, 0, 0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -795,10 +971,10 @@ plt.close()
 
 #LOOP
 ann_obj_id = 4  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[32., 74.], [35., 69.], 
-                   [40, 62], [37, 72], [43, 56], [35, 76], [31, 86], [37, 66], [53, 48], [33, 80]], dtype=np.float32) #cropped frame loop only
+points = np.array([[36., 60.],
+                   [40., 53.], [41, 58], [32, 53]], dtype=np.float32) #cropped frame loop only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0], np.int32)
+labels = np.array([1, 0, 0, 0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -879,7 +1055,7 @@ def add_new_prompt(frame_number, video_dir, prompt_dir, prompt_data_file, prompt
     print(f"Added new prompt image {new_image_name} for frame {frame_number} and updated prompt data.")
 
 
-add_new_prompt(new_prompt_frame, video_dir, prompt_dir, prompt_data_file, new_prompts)
+add_new_prompt(new_prompt_frame, video_dir, prompt_dir, prompt_data_path, new_prompts)
 
 
 
@@ -932,6 +1108,6 @@ def modify_prompt(frame_number, frame_mapping, prompt_data_file, new_prompts):
 
 frame_to_modify = new_prompt_frame
 updated_prompts = new_prompts
-modify_prompt(frame_to_modify, frame_mapping, prompt_data_file, updated_prompts)
+modify_prompt(frame_to_modify, frame_mapping, prompt_data_path, updated_prompts)
 
 
