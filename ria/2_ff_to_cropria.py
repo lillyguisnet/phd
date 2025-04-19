@@ -72,12 +72,12 @@ frame_names = [
     if os.path.splitext(p)[-1].lower() in [".jpg", ".jpeg"]
 ]
 frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
-
+frame_names
 
 inference_state = predictor.init_state(video_path=random_video_dir)
 
 
-points=np.array([[260, 345], [240, 342]], dtype=np.float32)
+points=np.array([[260, 365], [240, 375]], dtype=np.float32) #RIA region
 labels=np.array([1, 1], np.int32)
 
 prompts = {}
@@ -215,8 +215,10 @@ def process_frames_fixed_crop(input_folder, output_folder, video_segments, origi
             cropped_frame = cv2.resize(cropped_frame, (crop_width, crop_height))
         
         # Save the cropped frame
-        cv2.imwrite(os.path.join(output_folder, frame_file), cropped_frame)
+        output_path = os.path.join(output_folder, frame_file)
+        cv2.imwrite(output_path, cropped_frame)
     
+    print(f"Cropped frames saved to: {output_folder}")
     return len(frame_files), (crop_height, crop_width)
 
 
@@ -228,7 +230,6 @@ first_frame = cv2.imread(os.path.join(random_video_dir, frame_names[0]))
 original_size = first_frame.shape[:2]
 
 process_frames_fixed_crop(random_video_dir, output_folder, video_segments, original_size, 110)
-
 
 
 

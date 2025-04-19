@@ -290,10 +290,10 @@ def process_random_unprocessed_video(video_files_dir, output_dir):
 
 
 video_files = "/home/lilly/phd/ria/data_original/AG_WT"
-"/home/lilly/phd/ria/tst_free/original"
+#"/home/lilly/phd/ria/tst_free/original"
 
 save_jpg_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg"
-"/home/lilly/phd/ria/tst_free/tojpg"
+#"/home/lilly/phd/ria/tst_free/tojpg"
 
 
 vid = process_random_unprocessed_video(video_files, save_jpg_dir)

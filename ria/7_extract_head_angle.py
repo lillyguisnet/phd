@@ -36,6 +36,7 @@ import random
 import numpy.linalg as la
 from scipy import interpolate, ndimage
 from collections import defaultdict
+import re
 
 def load_cleaned_segments_from_h5(filename):
     cleaned_segments = {}
@@ -449,6 +450,8 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                                              restriction_point=0.4, straight_threshold=3):
     """
     Calculate head angle and bend location along the skeleton.
+    Never drops frames - always returns a result dictionary with appropriate error handling.
+    For straight worms (angle <= straight_threshold), bend values are set to 0.
     
     Parameters:
     -----------
@@ -466,183 +469,166 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
     Returns:
     --------
     dict containing:
-        - angle_degrees: calculated angle
-        - head positions and vectors (as before)
-        - bend_location: relative position along skeleton (0-1)
-        - bend_magnitude: strength of the bend
-        - bend_position: (y,x) coordinates of maximum bend point
+        - angle_degrees: calculated angle (0 if calculation fails)
+        - head positions and vectors
+        - bend_location: relative position along skeleton (0-1), 0 if straight
+        - bend_magnitude: strength of the bend, 0 if straight
+        - bend_position: (y,x) coordinates of maximum bend point, [0,0] if straight
+        - error: error message if calculation fails, None otherwise
     """
-    # Get ordered points along the skeleton
-    points = np.column_stack(np.where(skeleton))
-    ordered_points = points[np.argsort(points[:, 0])]
-    
-    # Normalize points spacing
-    norm_points, total_length = normalize_skeleton_points(ordered_points, num_points=100)
-    
-    # First calculate the head angle before modifying anything
-    head_sections = [0.05, 0.08, 0.1, 0.15]
-    body_section = 0.3
-    
-    best_angle_result = None
-    max_angle_magnitude = 0
-    debug_info = []
-    
-    for head_section in head_sections:
-        head_end_idx = max(2, int(head_section * len(norm_points)))
-        body_start_idx = int((1 - body_section) * len(norm_points))
-        
-        head_start = norm_points[0]
-        head_end = norm_points[head_end_idx]
-        body_start = norm_points[body_start_idx]
-        body_end = norm_points[-1]
-        
-        head_vector = head_end - head_start
-        body_vector = body_end - body_start
-        
-        head_mag = np.linalg.norm(head_vector)
-        body_mag = np.linalg.norm(body_vector)
-        
-        if head_mag < min_vector_length or body_mag < min_vector_length:
-            debug_info.append(f"Section {head_section}: Vector too short - head_mag={head_mag:.2f}, body_mag={body_mag:.2f}")
-            continue
-        
-        dot_product = np.dot(head_vector, body_vector)
-        cos_angle = np.clip(dot_product / (head_mag * body_mag), -1.0, 1.0)
-        angle_rad = np.arccos(cos_angle)
-        angle_deg = np.degrees(angle_rad)
-        
-        cross_product = np.cross(body_vector, head_vector)
-        if cross_product < 0:
-            angle_deg = -angle_deg
-        
-        if prev_angle is not None:
-            angle_change = abs(angle_deg - prev_angle)
-            if angle_change > 25:
-                debug_info.append(f"Section {head_section}: Angle change too large - {angle_change:.2f} degrees")
-                continue
-        
-        if abs(angle_deg) > max_angle_magnitude:
-            max_angle_magnitude = abs(angle_deg)
-            best_angle_result = {
-                'angle_degrees': float(angle_deg),
-                'head_start_pos': head_start.tolist(),
-                'head_end_pos': head_end.tolist(),
-                'body_start_pos': body_start.tolist(),
-                'body_end_pos': body_end.tolist(),
-                'head_vector': head_vector.tolist(),
-                'body_vector': body_vector.tolist(),
-                'head_mag': float(head_mag),
-                'body_mag': float(body_mag),
-                'head_section': head_section
+    try:
+        # Get ordered points along the skeleton
+        points = np.column_stack(np.where(skeleton))
+        if len(points) == 0:
+            return {
+                'angle_degrees': prev_angle if prev_angle is not None else 0,
+                'error': 'Empty skeleton',
+                'head_mag': 0,
+                'body_mag': 0,
+                'bend_location': 0,
+                'bend_magnitude': 0,
+                'bend_position': [0, 0],
+                'skeleton_points': [[0, 0]],  # Default point
+                'curvature_profile': [0],
+                'head_start_pos': [0, 0],
+                'head_end_pos': [0, 0],
+                'body_start_pos': [0, 0],
+                'body_end_pos': [0, 0],
+                'head_vector': [0, 0],
+                'body_vector': [0, 0]
             }
-    
-    if best_angle_result is None:
+        
+        ordered_points = points[np.argsort(points[:, 0])]
+        norm_points, total_length = normalize_skeleton_points(ordered_points, num_points=100)
+        
+        # Calculate head angle
+        head_sections = [0.05, 0.08, 0.1, 0.15]
+        body_section = 0.3
+        
+        best_result = None
+        max_angle_magnitude = 0
+        
+        for head_section in head_sections:
+            head_end_idx = max(2, int(head_section * len(norm_points)))
+            body_start_idx = int((1 - body_section) * len(norm_points))
+            
+            head_start = norm_points[0]
+            head_end = norm_points[head_end_idx]
+            body_start = norm_points[body_start_idx]
+            body_end = norm_points[-1]
+            
+            head_vector = head_end - head_start
+            body_vector = body_end - body_start
+            
+            head_mag = np.linalg.norm(head_vector)
+            body_mag = np.linalg.norm(body_vector)
+            
+            if head_mag < min_vector_length or body_mag < min_vector_length:
+                continue
+            
+            dot_product = np.dot(head_vector, body_vector)
+            cos_angle = np.clip(dot_product / (head_mag * body_mag), -1.0, 1.0)
+            angle_rad = np.arccos(cos_angle)
+            angle_deg = np.degrees(angle_rad)
+            
+            cross_product = np.cross(body_vector, head_vector)
+            if cross_product < 0:
+                angle_deg = -angle_deg
+            
+            if prev_angle is not None:
+                angle_change = abs(angle_deg - prev_angle)
+                if angle_change > 25:
+                    continue
+            
+            if abs(angle_deg) > max_angle_magnitude:
+                max_angle_magnitude = abs(angle_deg)
+                best_result = {
+                    'angle_degrees': float(angle_deg),
+                    'head_start_pos': head_start.tolist(),
+                    'head_end_pos': head_end.tolist(),
+                    'body_start_pos': body_start.tolist(),
+                    'body_end_pos': body_end.tolist(),
+                    'head_vector': head_vector.tolist(),
+                    'body_vector': body_vector.tolist(),
+                    'head_mag': float(head_mag),
+                    'body_mag': float(body_mag),
+                    'head_section': head_section,
+                    'skeleton_points': norm_points.tolist(),
+                    'error': None
+                }
+        
+        if best_result is None:
+            # No valid angle found - use previous angle or default
+            best_result = {
+                'angle_degrees': prev_angle if prev_angle is not None else 0,
+                'error': 'No valid angle found with current parameters',
+                'head_mag': 0,
+                'body_mag': 0,
+                'head_start_pos': norm_points[0].tolist(),
+                'head_end_pos': norm_points[min(5, len(norm_points)-1)].tolist(),
+                'body_start_pos': norm_points[max(0, len(norm_points)-10)].tolist(),
+                'body_end_pos': norm_points[-1].tolist(),
+                'head_vector': [0, 0],
+                'body_vector': [0, 0],
+                'skeleton_points': norm_points.tolist()
+            }
+        
+        # If the worm is straight (angle within threshold), set all bend-related values to 0
+        if abs(best_result['angle_degrees']) <= straight_threshold:
+            best_result.update({
+                'bend_location': 0,
+                'bend_magnitude': 0,
+                'bend_position': [0, 0],
+                'curvature_profile': np.zeros(len(norm_points)).tolist(),
+                'is_straight': True
+            })
+        else:
+            # Calculate curvature only for non-straight worms
+            curvatures = gaussian_weighted_curvature(norm_points, window_size=25, sigma=8, 
+                                                   restriction_point=restriction_point)
+            
+            # Find the location of maximum bend (only consider points up to restriction)
+            valid_range = int(len(curvatures) * restriction_point)
+            max_curvature_idx = np.argmax(np.abs(curvatures[:valid_range]))
+            bend_location = max_curvature_idx / len(curvatures)  # Normalized position (0-1)
+            bend_magnitude = float(np.abs(curvatures[max_curvature_idx]))
+            bend_position = norm_points[max_curvature_idx].tolist()
+            
+            best_result.update({
+                'bend_location': bend_location,
+                'bend_magnitude': bend_magnitude,
+                'bend_position': bend_position,
+                'curvature_profile': curvatures.tolist(),
+                'is_straight': False
+            })
+        
+        return best_result
+        
+    except Exception as e:
+        # Handle any unexpected errors gracefully
         return {
             'angle_degrees': prev_angle if prev_angle is not None else 0,
-            'error': f"No valid angle found - Debug info: {'; '.join(debug_info)}",
+            'error': f'Unexpected error: {str(e)}',
             'head_mag': 0,
             'body_mag': 0,
             'bend_location': 0,
             'bend_magnitude': 0,
-            'bend_position': norm_points[0].tolist(),
-            'curvature_profile': [],
-            'skeleton_points': norm_points.tolist()
+            'bend_position': [0, 0],
+            'skeleton_points': [[0, 0]],  # Default point
+            'curvature_profile': [0],
+            'head_start_pos': [0, 0],
+            'head_end_pos': [0, 0],
+            'body_start_pos': [0, 0],
+            'body_end_pos': [0, 0],
+            'head_vector': [0, 0],
+            'body_vector': [0, 0],
+            'is_straight': True
         }
-    
-    # Calculate curvature for all cases
-    curvatures = gaussian_weighted_curvature(norm_points, window_size=25, sigma=8, 
-                                           restriction_point=restriction_point)
-    
-    # Now handle bend detection based on the angle result
-    if abs(best_angle_result['angle_degrees']) <= straight_threshold:
-        # If skeleton is straight, set bend_location to 0
-        bend_location = 0
-        bend_magnitude = 0
-        bend_position = norm_points[0].tolist()
-    else:
-        # Find the location of maximum bend (only consider points up to restriction)
-        valid_range = int(len(curvatures) * restriction_point)
-        max_curvature_idx = np.argmax(np.abs(curvatures[:valid_range]))
-        bend_location = max_curvature_idx / len(curvatures)  # Normalized position (0-1)
-        bend_magnitude = float(np.abs(curvatures[max_curvature_idx]))
-        bend_position = norm_points[max_curvature_idx].tolist()
-    
-    # Original head angle calculation logic
-    head_sections = [0.05, 0.08, 0.1, 0.15]
-    body_section = 0.3
-    
-    best_result = None
-    max_angle_magnitude = 0
-    
-    for head_section in head_sections:
-        head_end_idx = max(2, int(head_section * len(norm_points)))
-        body_start_idx = int((1 - body_section) * len(norm_points))
-        
-        head_start = norm_points[0]
-        head_end = norm_points[head_end_idx]
-        body_start = norm_points[body_start_idx]
-        body_end = norm_points[-1]
-        
-        head_vector = head_end - head_start
-        body_vector = body_end - body_start
-        
-        head_mag = np.linalg.norm(head_vector)
-        body_mag = np.linalg.norm(body_vector)
-        
-        if head_mag < min_vector_length or body_mag < min_vector_length:
-            continue
-        
-        dot_product = np.dot(head_vector, body_vector)
-        cos_angle = np.clip(dot_product / (head_mag * body_mag), -1.0, 1.0)
-        angle_rad = np.arccos(cos_angle)
-        angle_deg = np.degrees(angle_rad)
-        
-        cross_product = np.cross(body_vector, head_vector)
-        if cross_product < 0:
-            angle_deg = -angle_deg
-        
-        if prev_angle is not None:
-            angle_change = abs(angle_deg - prev_angle)
-            if angle_change > 25:
-                continue
-        
-        if abs(angle_deg) > max_angle_magnitude:
-            max_angle_magnitude = abs(angle_deg)
-            best_result = {
-                'angle_degrees': float(angle_deg),
-                'head_start_pos': head_start.tolist(),
-                'head_end_pos': head_end.tolist(),
-                'body_start_pos': body_start.tolist(),
-                'body_end_pos': body_end.tolist(),
-                'head_vector': head_vector.tolist(),
-                'body_vector': body_vector.tolist(),
-                'head_mag': float(head_mag),
-                'body_mag': float(body_mag),
-                'head_section': head_section,
-                'skeleton_points': norm_points.tolist(),
-                'bend_location': bend_location,  # Relative position along skeleton (0-1)
-                'bend_magnitude': bend_magnitude,  # Strength of the bend
-                'bend_position': bend_position,  # (y,x) coordinates of maximum bend
-                'curvature_profile': curvatures.tolist(),  # Full curvature profile
-                'error': None
-            }
-    
-    if best_result is None:
-        return {
-            'angle_degrees': prev_angle if prev_angle is not None else 0,
-            'error': 'No valid angle found',
-            'head_mag': 0,
-            'body_mag': 0,
-            'bend_location': None,
-            'bend_magnitude': None,
-            'bend_position': None
-        }
-    
-    return best_result
 
 def interpolate_straight_frames(df, straight_threshold=3):
     """
     Interpolate bend locations ONLY for straight frames, keeping all other values unchanged.
+    For straight frames (angle <= straight_threshold), all bend values are set to 0.
     
     Parameters:
     -----------
@@ -654,29 +640,36 @@ def interpolate_straight_frames(df, straight_threshold=3):
     # Make a copy to avoid modifying the original
     df = df.copy()
     
-    # Work on each object separately
+    # First, set all bend values to 0 for straight frames
+    straight_mask = df['angle_degrees'].abs() <= straight_threshold
+    df.loc[straight_mask, 'bend_location'] = 0
+    df.loc[straight_mask, 'bend_magnitude'] = 0
+    df.loc[straight_mask, ['bend_position_x', 'bend_position_y']] = 0
+    df.loc[straight_mask, 'is_straight'] = True
+    
+    # Work on each object separately for non-straight frames
     for obj_id in df['object_id'].unique():
         # Get data for this object
         mask = df['object_id'] == obj_id
         obj_data = df[mask].copy()
         
-        # Identify straight frames using the same threshold as in angle calculation
-        straight_mask = (obj_data['angle_degrees'].abs() <= straight_threshold)
+        # Only process non-straight frames
+        non_straight_mask = obj_data['angle_degrees'].abs() > straight_threshold
         
-        if straight_mask.any():
-            # Find runs of straight frames
+        if non_straight_mask.any():
+            # Find runs of non-straight frames
             runs = []
             start = None
-            for i, is_straight in enumerate(straight_mask):
-                if is_straight and start is None:
+            for i, is_non_straight in enumerate(non_straight_mask):
+                if is_non_straight and start is None:
                     start = i
-                elif not is_straight and start is not None:
+                elif not is_non_straight and start is not None:
                     runs.append((start, i-1))
                     start = None
             if start is not None:  # Handle case where last run goes to end
-                runs.append((start, len(straight_mask)-1))
+                runs.append((start, len(non_straight_mask)-1))
             
-            # Process each run of straight frames
+            # Process each run of non-straight frames
             for start_idx, end_idx in runs:
                 # Find nearest actual bends before and after
                 prev_idx = start_idx - 1
@@ -687,7 +680,7 @@ def interpolate_straight_frames(df, straight_threshold=3):
                     prev_loc = obj_data.iloc[prev_idx]['bend_location']
                     next_loc = obj_data.iloc[next_idx]['bend_location']
                     
-                    # Only interpolate the straight frames
+                    # Only interpolate the non-straight frames
                     for i in range(start_idx, end_idx + 1):
                         weight = (i - start_idx + 1) / (end_idx - start_idx + 2)
                         interp_val = prev_loc * (1 - weight) + next_loc * weight
@@ -703,7 +696,7 @@ def interpolate_straight_frames(df, straight_threshold=3):
                     next_loc = obj_data.iloc[next_idx]['bend_location']
                     obj_data.iloc[start_idx:end_idx+1, obj_data.columns.get_loc('bend_location')] = next_loc
         
-        # Update only the straight frames in the main dataframe
+        # Update the main dataframe
         df.loc[mask] = obj_data
     
     return df
@@ -786,6 +779,7 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
                          smoothing_window=3, deviation_threshold=15):
     """
     Process a batch of skeletons with head angle smoothing and bend recalculation.
+    Handles all frames gracefully with smooth interpolation between valid frames.
     
     Parameters:
     -----------
@@ -807,47 +801,122 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
     pandas.DataFrame
         Complete DataFrame with smoothed angles and recalculated bend positions
     """
-    # First pass: Calculate initial angles
+    # First pass: Calculate initial angles with graceful error handling
     initial_data = []
-    dropped_frames = []
-    prev_angles = {}
+    frame_results = {}  # Store results by frame and object
     
+    # First pass to collect all valid results
     for frame_idx in sorted(truncated_skeletons.keys()):
         frame_data = truncated_skeletons[frame_idx]
+        frame_results[frame_idx] = {}
         
         for obj_id, skeleton_data in frame_data.items():
             skeleton = skeleton_data[0]
-            prev_angle = prev_angles.get(obj_id)
             
             result = calculate_head_angle_with_positions_and_bend(
                 skeleton,
-                prev_angle=prev_angle,
+                prev_angle=None,  # Don't use prev_angle in first pass
                 min_vector_length=min_vector_length,
                 restriction_point=restriction_point,
                 straight_threshold=straight_threshold
             )
             
-            if result['angle_degrees'] is None or result['error'] is not None:
-                dropped_frames.append({
-                    'frame': frame_idx,
-                    'object_id': obj_id,
-                    'reason': result['error']
-                })
-                continue
+            # Store result regardless of error status
+            frame_results[frame_idx][obj_id] = result
+    
+    # Second pass to interpolate invalid frames
+    for frame_idx in sorted(truncated_skeletons.keys()):
+        for obj_id in frame_results[frame_idx].keys():
+            result = frame_results[frame_idx][obj_id]
+            
+            if result['error'] is not None:
+                # Find previous and next valid frames
+                prev_valid_frame = None
+                prev_valid_result = None
+                next_valid_frame = None
+                next_valid_result = None
                 
-            prev_angles[obj_id] = result['angle_degrees']
+                # Look for previous valid frame
+                for prev_frame in range(frame_idx - 1, -1, -1):
+                    if prev_frame in frame_results and obj_id in frame_results[prev_frame]:
+                        prev_result = frame_results[prev_frame][obj_id]
+                        if prev_result['error'] is None:
+                            prev_valid_frame = prev_frame
+                            prev_valid_result = prev_result
+                            break
                 
+                # Look for next valid frame
+                for next_frame in range(frame_idx + 1, max(frame_results.keys()) + 1):
+                    if next_frame in frame_results and obj_id in frame_results[next_frame]:
+                        next_result = frame_results[next_frame][obj_id]
+                        if next_result['error'] is None:
+                            next_valid_frame = next_frame
+                            next_valid_result = next_result
+                            break
+                
+                # Interpolate based on available valid frames
+                if prev_valid_result and next_valid_result:
+                    total_frames = next_valid_frame - prev_valid_frame
+                    weight_next = (frame_idx - prev_valid_frame) / total_frames
+                    weight_prev = 1 - weight_next
+                    
+                    interpolated_result = interpolate_results(
+                        prev_valid_result, next_valid_result, 
+                        weight_prev, weight_next,
+                        straight_threshold=straight_threshold)
+                    interpolated_result['error'] = f"Interpolated between frames {prev_valid_frame} and {next_valid_frame}"
+                    frame_results[frame_idx][obj_id] = interpolated_result
+                    
+                elif prev_valid_result:
+                    frames_since_valid = frame_idx - prev_valid_frame
+                    decay_factor = 0.9 ** frames_since_valid
+                    
+                    interpolated_result = decay_result(
+                        prev_valid_result, decay_factor,
+                        straight_threshold=straight_threshold)
+                    interpolated_result['error'] = f"Decayed from previous frame {prev_valid_frame}"
+                    frame_results[frame_idx][obj_id] = interpolated_result
+                    
+                elif next_valid_result:
+                    frames_until_valid = next_valid_frame - frame_idx
+                    decay_factor = 0.9 ** frames_until_valid
+                    
+                    interpolated_result = decay_result(
+                        next_valid_result, decay_factor,
+                        straight_threshold=straight_threshold)
+                    interpolated_result['error'] = f"Decayed from next frame {next_valid_frame}"
+                    frame_results[frame_idx][obj_id] = interpolated_result
+                    
+                else:
+                    # No valid frames available - use default values with straight configuration
+                    frame_results[frame_idx][obj_id] = {
+                        'angle_degrees': 0.0,
+                        'head_mag': 0.0,
+                        'body_mag': 0.0,
+                        'bend_location': 0,
+                        'bend_magnitude': 0,
+                        'bend_position': [0, 0],
+                        'skeleton_points': [[0, 0]],
+                        'curvature_profile': [0],
+                        'head_start_pos': [0, 0],
+                        'head_end_pos': [0, 0],
+                        'body_start_pos': [0, 0],
+                        'body_end_pos': [0, 0],
+                        'head_vector': [0, 0],
+                        'body_vector': [0, 0],
+                        'is_straight': True,
+                        'error': 'No valid frames available for interpolation'
+                    }
+            
+            # Add to initial_data for further processing
             initial_data.append({
                 'frame': frame_idx,
                 'object_id': obj_id,
-                'angle_degrees': result['angle_degrees'],
-                'head_mag': result['head_mag'],
-                'body_mag': result['body_mag']
+                'angle_degrees': frame_results[frame_idx][obj_id]['angle_degrees'],
+                'head_mag': frame_results[frame_idx][obj_id]['head_mag'],
+                'body_mag': frame_results[frame_idx][obj_id]['body_mag'],
+                'error': frame_results[frame_idx][obj_id].get('error', None)
             })
-    
-    print(f"Dropped {len(dropped_frames)} frames")
-    for drop in dropped_frames:  # Show first 10 dropped frames
-        print(f"Frame {drop['frame']}: {drop['reason']}")
     
     # Convert to DataFrame and apply head angle smoothing
     initial_df = pd.DataFrame(initial_data)
@@ -859,51 +928,155 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
         deviation_threshold=deviation_threshold
     )
     
-    # Second pass: Recalculate bend positions using smoothed angles
+    # Final pass: Recalculate bend positions using smoothed angles
     final_data = []
     
     # Group by object_id to maintain continuity
     for obj_id in smoothed_df['object_id'].unique():
         obj_data = smoothed_df[smoothed_df['object_id'] == obj_id]
-        prev_angle = None
         
         for _, row in obj_data.iterrows():
             frame_idx = row['frame']
-            skeleton = truncated_skeletons[frame_idx][obj_id][0]
+            original_result = frame_results[frame_idx][obj_id]
             
-            # Calculate bends using the smoothed angle as reference
-            result = calculate_head_angle_with_positions_and_bend(
-                skeleton,
-                prev_angle=prev_angle,
-                min_vector_length=min_vector_length,
-                restriction_point=restriction_point,
-                straight_threshold=straight_threshold
-            )
-            
-            prev_angle = row['angle_degrees']  # Use smoothed angle for continuity
-            
-            final_data.append({
+            # Create final result using smoothed angle but keeping/interpolating other values
+            final_result = {
                 'frame': frame_idx,
                 'object_id': obj_id,
-                'angle_degrees': row['angle_degrees'],  # Keep smoothed angle
-                'bend_location': result['bend_location'],
-                'bend_magnitude': result['bend_magnitude'],
-                'bend_position_y': result['bend_position'][0] if result['bend_position'] else None,
-                'bend_position_x': result['bend_position'][1] if result['bend_position'] else None,
-                'head_mag': result['head_mag'],
-                'body_mag': result['body_mag'],
+                'angle_degrees': row['angle_degrees'],  # Use smoothed angle
+                'bend_location': original_result['bend_location'],
+                'bend_magnitude': original_result['bend_magnitude'],
+                'bend_position_y': original_result['bend_position'][0],
+                'bend_position_x': original_result['bend_position'][1],
+                'head_mag': original_result['head_mag'],
+                'body_mag': original_result['body_mag'],
                 'is_noise_peak': row['is_noise_peak'],
                 'peak_deviation': row['peak_deviation'],
-                'window_size_used': row['window_size_used']
-            })
+                'window_size_used': row['window_size_used'],
+                'error': original_result.get('error', None)
+            }
+            
+            final_data.append(final_result)
     
     final_df = pd.DataFrame(final_data)
     
     # Apply bend interpolation for straight frames
     final_df = interpolate_straight_frames(final_df, straight_threshold=straight_threshold)
     
+    # Final validation: Ensure all frames within straight threshold have zero bend values
+    straight_mask = final_df['angle_degrees'].abs() <= straight_threshold
+    if straight_mask.any():
+        print(f"Setting bend values to 0 for {straight_mask.sum()} straight frames")
+        final_df.loc[straight_mask, 'bend_location'] = 0
+        final_df.loc[straight_mask, 'bend_magnitude'] = 0
+        final_df.loc[straight_mask, ['bend_position_x', 'bend_position_y']] = 0
+        final_df.loc[straight_mask, 'is_straight'] = True
+    
+    # Add warning column for interpolated/default values
+    final_df['has_warning'] = final_df['error'].notna()
+    
+    # Log summary of warnings
+    warning_count = final_df['has_warning'].sum()
+    if warning_count > 0:
+        print(f"\nWarning Summary:")
+        print(f"Total frames with warnings: {warning_count}")
+        print("\nSample of warnings:")
+        for error in final_df[final_df['has_warning']]['error'].unique()[:5]:
+            count = final_df[final_df['error'] == error].shape[0]
+            print(f"- {error}: {count} frames")
+    
+    # Verify no straight frames have non-zero bend values
+    verification_mask = (final_df['angle_degrees'].abs() <= straight_threshold) & \
+                       ((final_df['bend_location'] != 0) | \
+                        (final_df['bend_magnitude'] != 0) | \
+                        (final_df['bend_position_x'] != 0) | \
+                        (final_df['bend_position_y'] != 0))
+    if verification_mask.any():
+        print("\nWARNING: Found straight frames with non-zero bend values!")
+        print("Example problematic frames:")
+        print(final_df[verification_mask].head())
+    
     return final_df
 
+def interpolate_results(prev_result, next_result, weight_prev, weight_next, straight_threshold=3):
+    """
+    Interpolate between two results based on weights.
+    If the interpolated angle is within the straight threshold, all bend values are set to 0.
+    """
+    def interpolate_value(prev_val, next_val):
+        if isinstance(prev_val, (list, np.ndarray)):
+            return [weight_prev * p + weight_next * n for p, n in zip(prev_val, next_val)]
+        return weight_prev * prev_val + weight_next * next_val
+    
+    interpolated = {}
+    # First interpolate the angle to check if result should be straight
+    angle_degrees = interpolate_value(prev_result['angle_degrees'], next_result['angle_degrees'])
+    
+    # If interpolated angle is within straight threshold, return straight result
+    if abs(angle_degrees) <= straight_threshold:
+        return {
+            'angle_degrees': angle_degrees,
+            'head_mag': interpolate_value(prev_result['head_mag'], next_result['head_mag']),
+            'body_mag': interpolate_value(prev_result['body_mag'], next_result['body_mag']),
+            'bend_location': 0,
+            'bend_magnitude': 0,
+            'bend_position': [0, 0],
+            'head_start_pos': interpolate_value(prev_result['head_start_pos'], next_result['head_start_pos']),
+            'head_end_pos': interpolate_value(prev_result['head_end_pos'], next_result['head_end_pos']),
+            'body_start_pos': interpolate_value(prev_result['body_start_pos'], next_result['body_start_pos']),
+            'body_end_pos': interpolate_value(prev_result['body_end_pos'], next_result['body_end_pos']),
+            'head_vector': interpolate_value(prev_result['head_vector'], next_result['head_vector']),
+            'body_vector': interpolate_value(prev_result['body_vector'], next_result['body_vector']),
+            'is_straight': True
+        }
+    
+    # Otherwise interpolate all values
+    for key in prev_result.keys():
+        if key in ['error', 'is_straight']:
+            continue
+        interpolated[key] = interpolate_value(prev_result[key], next_result[key])
+    
+    interpolated['is_straight'] = False
+    return interpolated
+
+def decay_result(base_result, decay_factor, straight_threshold=3):
+    """
+    Apply decay to a result, making it trend toward default values.
+    If the decayed angle is within the straight threshold, all bend values are set to 0.
+    """
+    # First decay the angle to check if result should be straight
+    angle_degrees = base_result['angle_degrees'] * decay_factor
+    
+    # If decayed angle is within straight threshold, return straight result
+    if abs(angle_degrees) <= straight_threshold:
+        return {
+            'angle_degrees': angle_degrees,
+            'head_mag': base_result['head_mag'] * decay_factor,
+            'body_mag': base_result['body_mag'] * decay_factor,
+            'bend_location': 0,
+            'bend_magnitude': 0,
+            'bend_position': [0, 0],
+            'head_start_pos': [v * decay_factor for v in base_result['head_start_pos']],
+            'head_end_pos': [v * decay_factor for v in base_result['head_end_pos']],
+            'body_start_pos': [v * decay_factor for v in base_result['body_start_pos']],
+            'body_end_pos': [v * decay_factor for v in base_result['body_end_pos']],
+            'head_vector': [v * decay_factor for v in base_result['head_vector']],
+            'body_vector': [v * decay_factor for v in base_result['body_vector']],
+            'is_straight': True
+        }
+    
+    # Otherwise decay all values
+    decayed = {}
+    for key, value in base_result.items():
+        if key in ['error', 'is_straight']:
+            continue
+        if isinstance(value, (list, np.ndarray)):
+            decayed[key] = [v * decay_factor for v in value]
+        else:
+            decayed[key] = value * decay_factor
+    
+    decayed['is_straight'] = False
+    return decayed
 
 # Process all skeletons with integrated smoothing and bend recalculation
 results_df = process_skeleton_batch(
@@ -972,8 +1145,8 @@ def save_head_angles_with_side_correction(filename, results_df, final_data_dir):
         
     Returns:
     --------
-    str
-        Path to the saved head angles file
+    pandas.DataFrame
+        Merged DataFrame with corrected angles
     """
     # Extract base name from filename
     base_name = os.path.basename(filename).replace("_headsegmentation.h5", "")
@@ -985,12 +1158,23 @@ def save_head_angles_with_side_correction(filename, results_df, final_data_dir):
 
     print(f"Loaded final data from {final_data_path}")
     print(f"Final data shape: {final_df.shape}")
+    print(f"Results df shape: {results_df.shape}")
 
-    # Merge results_df with final_df based on frame and object_id
+    # Get list of columns to overwrite
+    columns_to_overwrite = [col for col in results_df.columns if col in final_df.columns]
+    print(f"Columns that will be overwritten: {columns_to_overwrite}")
+
+    # Merge results_df with final_df based on frame, using suffixes to avoid conflicts
     merged_df = pd.merge(final_df, results_df, 
                         left_on=['frame'],
                         right_on=['frame'],
-                        how='left')
+                        how='left',
+                        suffixes=('_old', ''))
+
+    # For each column that exists in both dataframes, keep only the new version
+    for col in columns_to_overwrite:
+        if col + '_old' in merged_df.columns:
+            merged_df.drop(columns=[col + '_old'], inplace=True)
 
     # Create angle_degrees_corrected column based on side_position
     merged_df['angle_degrees_corrected'] = merged_df.apply(
@@ -1007,6 +1191,8 @@ def save_head_angles_with_side_correction(filename, results_df, final_data_dir):
     # Save the merged dataframe with head angles
     merged_df.to_csv(output_path, index=False)
     print(f"Saved merged df to: {output_path}")
+    print(f"Final merged df shape: {merged_df.shape}")
+    print(f"Final columns: {merged_df.columns.tolist()}")
 
     # Delete previous file if it exists
     if os.path.exists(final_data_path):
@@ -1140,17 +1326,28 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
         
         return image
 
-    # Get sorted list of image files
-    image_files = sorted([f for f in os.listdir(image_dir) 
-                         if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    # Get sorted list of image files and extract their frame numbers
+    image_files = [f for f in os.listdir(image_dir) 
+                   if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
     
-    if not image_files:
+    # Extract frame numbers and create mapping
+    frame_numbers = []
+    for img_file in image_files:
+        # Extract number from filename (assuming format like 000000.jpg)
+        match = re.search(r'(\d+)', img_file)
+        if match:
+            frame_numbers.append((int(match.group(1)), img_file))
+    
+    # Sort by frame number
+    frame_numbers.sort(key=lambda x: x[0])
+    
+    if not frame_numbers:
         raise ValueError(f"No image files found in {image_dir}")
 
     # Read first image to get dimensions
-    first_image = cv2.imread(os.path.join(image_dir, image_files[0]))
+    first_image = cv2.imread(os.path.join(image_dir, frame_numbers[0][1]))
     if first_image is None:
-        raise ValueError(f"Could not read first image: {image_files[0]}")
+        raise ValueError(f"Could not read first image: {frame_numbers[0][1]}")
     
     height, width, _ = first_image.shape
 
@@ -1179,7 +1376,7 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
     angles_dict = angles_df.set_index('frame')['angle_degrees_corrected'].to_dict()
 
     # Process each frame
-    for frame_idx, image_file in enumerate(image_files):
+    for frame_number, image_file in frame_numbers:
         try:
             # Read image
             image_path = os.path.join(image_dir, image_file)
@@ -1188,40 +1385,46 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
                 raise ValueError(f"Could not read image: {image_file}")
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
+            # Print debug info for first few frames
+            if frame_number < 5:
+                print(f"Processing frame {frame_number}, file: {image_file}")
+                print(f"Bottom masks available: {frame_number in bottom_masks_dict}")
+                print(f"Top masks available: {frame_number in top_masks_dict}")
+            
             # Start with original frame
             final_frame = frame.copy()
             
             # Apply bottom masks if available
-            if frame_idx in bottom_masks_dict:
+            if frame_number in bottom_masks_dict:
                 bottom_overlay = create_mask_overlay(frame, 
-                                                  bottom_masks_dict[frame_idx],
+                                                  bottom_masks_dict[frame_number],
                                                   bottom_mask_colors, 
                                                   bottom_alpha)
                 final_frame = cv2.addWeighted(final_frame, 1, bottom_overlay, bottom_alpha, 0)
             
             # Apply top masks and find skeleton tip
             tip_position = None
-            if frame_idx in top_masks_dict:
+            if frame_number in top_masks_dict:
                 top_overlay = create_mask_overlay(frame,
-                                               top_masks_dict[frame_idx],
+                                               top_masks_dict[frame_number],
                                                top_mask_colors,
                                                top_alpha)
                 final_frame = cv2.addWeighted(final_frame, 1, top_overlay, top_alpha, 0)
                 
                 # Find tip position from the first skeleton mask (assuming it's the main one)
-                if top_masks_dict[frame_idx]:
-                    first_mask_id = next(iter(top_masks_dict[frame_idx]))
-                    tip_position = find_skeleton_tip(top_masks_dict[frame_idx][first_mask_id])
+                if top_masks_dict[frame_number]:
+                    first_mask_id = next(iter(top_masks_dict[frame_number]))
+                    tip_position = find_skeleton_tip(top_masks_dict[frame_number][first_mask_id])
             
             # Add angle text if available
-            if frame_idx in angles_dict and tip_position is not None:
-                final_frame = add_angle_text(final_frame, angles_dict[frame_idx], tip_position)
+            if frame_number in angles_dict and tip_position is not None:
+                final_frame = add_angle_text(final_frame, angles_dict[frame_number], tip_position)
 
             # Write frame
             out.write(cv2.cvtColor(final_frame, cv2.COLOR_RGB2BGR))
 
         except Exception as e:
-            print(f"Error processing frame {frame_idx}: {str(e)}")
+            print(f"Error processing frame {frame_number} ({image_file}): {str(e)}")
             continue
 
     # Clean up
@@ -1229,8 +1432,9 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
     print(f"Video saved to {output_path}")
 
 
+# Example usage:
 """
-video_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg/AG_WT-MMH99_10s_20190220_04"
+video_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg/AG_WT-MMH99_10s_20190221_02"
 image_dir = video_dir
 bottom_masks = head_segments
 top_masks = truncated_skeletons
