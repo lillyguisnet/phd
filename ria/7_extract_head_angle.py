@@ -1005,7 +1005,16 @@ def interpolate_results(prev_result, next_result, weight_prev, weight_next, stra
     """
     def interpolate_value(prev_val, next_val):
         if isinstance(prev_val, (list, np.ndarray)):
-            return [weight_prev * p + weight_next * n for p, n in zip(prev_val, next_val)]
+            # Handle the case where elements might be nested lists
+            result = []
+            for p, n in zip(prev_val, next_val):
+                if isinstance(p, (list, np.ndarray)):
+                    # Handle nested lists recursively
+                    result.append(interpolate_value(p, n))
+                else:
+                    # Handle simple number case
+                    result.append(weight_prev * p + weight_next * n)
+            return result
         return weight_prev * prev_val + weight_next * next_val
     
     interpolated = {}
@@ -1044,6 +1053,13 @@ def decay_result(base_result, decay_factor, straight_threshold=3):
     Apply decay to a result, making it trend toward default values.
     If the decayed angle is within the straight threshold, all bend values are set to 0.
     """
+    def apply_decay(value):
+        """Helper function to recursively apply decay to nested lists"""
+        if isinstance(value, (list, np.ndarray)):
+            return [apply_decay(v) for v in value]
+        else:
+            return value * decay_factor
+    
     # First decay the angle to check if result should be straight
     angle_degrees = base_result['angle_degrees'] * decay_factor
     
@@ -1056,12 +1072,12 @@ def decay_result(base_result, decay_factor, straight_threshold=3):
             'bend_location': 0,
             'bend_magnitude': 0,
             'bend_position': [0, 0],
-            'head_start_pos': [v * decay_factor for v in base_result['head_start_pos']],
-            'head_end_pos': [v * decay_factor for v in base_result['head_end_pos']],
-            'body_start_pos': [v * decay_factor for v in base_result['body_start_pos']],
-            'body_end_pos': [v * decay_factor for v in base_result['body_end_pos']],
-            'head_vector': [v * decay_factor for v in base_result['head_vector']],
-            'body_vector': [v * decay_factor for v in base_result['body_vector']],
+            'head_start_pos': apply_decay(base_result['head_start_pos']),
+            'head_end_pos': apply_decay(base_result['head_end_pos']),
+            'body_start_pos': apply_decay(base_result['body_start_pos']),
+            'body_end_pos': apply_decay(base_result['body_end_pos']),
+            'head_vector': apply_decay(base_result['head_vector']),
+            'body_vector': apply_decay(base_result['body_vector']),
             'is_straight': True
         }
     
@@ -1070,10 +1086,7 @@ def decay_result(base_result, decay_factor, straight_threshold=3):
     for key, value in base_result.items():
         if key in ['error', 'is_straight']:
             continue
-        if isinstance(value, (list, np.ndarray)):
-            decayed[key] = [v * decay_factor for v in value]
-        else:
-            decayed[key] = value * decay_factor
+        decayed[key] = apply_decay(value)
     
     decayed['is_straight'] = False
     return decayed

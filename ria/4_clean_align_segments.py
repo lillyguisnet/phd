@@ -172,381 +172,6 @@ def fill_missing_masks(video_segments: Dict[int, Dict[int, np.ndarray]], require
 loaded_video_segments = fill_missing_masks(loaded_video_segments)
 
 
-### Check for overlaps between the segments (Modify masks to remove overlapping pixels)
-def check_mask_overlap(loaded_video_segments):
-    results = {}
-    total_frames = len(loaded_video_segments)
-    frames_with_overlap = 0
-    
-    for frame, masks in loaded_video_segments.items():
-        overlap = False
-        mask_combination = []
-        
-        required_masks = [masks.get(i) for i in range(2, 5)]
-        if all(mask is not None for mask in required_masks): 
-            for i in range(len(required_masks)):
-                for j in range(i+1, len(required_masks)):
-                    overlap_mask = np.logical_and(required_masks[i], required_masks[j])
-                    overlap_count = np.sum(overlap_mask)
-                    if overlap_count > 0:
-                        overlap = True
-                        frames_with_overlap += 1
-                        mask_combination.append((i+2, j+2, overlap_count))
-        
-        if overlap:
-            results[frame] = {
-                'overlap': overlap,
-                'mask_combination': mask_combination
-            }
-
-    print("\nOverlap Analysis Results:")
-    print(f"Total frames analyzed: {total_frames}")
-    
-    if results:
-        print(f"Found overlaps in {frames_with_overlap} frames:")
-        for frame, result in results.items():
-            for combination in result['mask_combination']:
-                print(f"Frame {frame}:  Masks {combination[0]} and {combination[1]} overlap: {combination[2]} pixels")
-    else:
-        print("No overlaps found between any masks in any frames!")
-
-    return results
-
-def remove_overlap(mask1, mask2):
-    overlap = np.logical_and(mask1, mask2)
-    return mask1 & ~overlap, mask2 & ~overlap, np.sum(overlap)
-
-def remove_overlapping_pixels(loaded_video_segments, overlap_results):
-    modified_segments = {}
-    
-    for frame, masks in loaded_video_segments.items():
-        modified_masks = masks.copy()
-        
-        if frame in overlap_results:
-            for combination in overlap_results[frame]['mask_combination']:
-                mask1_id, mask2_id, _ = combination
-                mask1, mask2, _ = remove_overlap(masks[mask1_id], masks[mask2_id])
-                modified_masks[mask1_id] = mask1
-                modified_masks[mask2_id] = mask2
-        
-        modified_segments[frame] = modified_masks
-    
-    return modified_segments
-
-overlap_results = check_mask_overlap(loaded_video_segments)
-
-modified_segments = remove_overlapping_pixels(loaded_video_segments, overlap_results)
-modified_overlap_results = check_mask_overlap(modified_segments)
-
-
-
-###Check for discontinuous segments
-def find_connected_components(mask):
-    # Remove the single-dimensional entries
-    mask = np.squeeze(mask)
-    
-    # Use scipy's label function to find connected components
-    labeled_array, num_features = ndimage.label(mask)
-    
-    return labeled_array, num_features
-
-def calculate_statistics(sizes):
-    if not sizes:
-        return {
-            'mean': 0,
-            'median': 0,
-            'min': 0,
-            'max': 0,
-            'std': 0
-        }
-    return {
-        'mean': np.mean(sizes),
-        'median': np.median(sizes),
-        'min': np.min(sizes),
-        'max': np.max(sizes),
-        'std': np.std(sizes)
-    }
-
-def check_discontinuous_segments(modified_segments):
-    discontinuous_results = {}
-    continuous_results = {}
-    segment_statistics = {2: [], 3: [], 4: []}
-
-    for frame, masks in modified_segments.items():
-        frame_results = {}
-
-        for mask_id, mask in masks.items():
-            if mask_id in [2, 3, 4]:  # Only check masks 2, 3, and 4
-                labeled_array, num_features = find_connected_components(mask)
-                
-                component_sizes = [np.sum(labeled_array == i) for i in range(1, num_features + 1)]
-                segment_statistics[mask_id].extend(component_sizes)
-                
-                if num_features > 1:
-                    frame_results[mask_id] = {
-                        'discontinuous': True,
-                        'num_components': num_features,
-                        'component_sizes': component_sizes
-                    }
-                else:
-                    frame_results[mask_id] = {
-                        'discontinuous': False,
-                        'num_components': 1,
-                        'component_sizes': component_sizes
-                    }
-
-        if any(result['discontinuous'] for result in frame_results.values()):
-            discontinuous_results[frame] = frame_results
-        else:
-            continuous_results[frame] = frame_results
-
-    # Calculate statistics for each segment
-    for mask_id in [2, 3, 4]:
-        segment_statistics[mask_id] = calculate_statistics(segment_statistics[mask_id])
-
-    return discontinuous_results, continuous_results, segment_statistics
-
-def print_segment_analysis_results(discontinuous_results, continuous_results, segment_statistics, modified_segments):
-    print("Discontinuous segments:")
-    if not discontinuous_results:
-        print("No discontinuous segments found.")
-    else:
-        print(f"Found discontinuous segments in {len(discontinuous_results)} frames.")
-        print("\nDetails of discontinuous segments:")
-        for frame, results in discontinuous_results.items():
-            print(f"\nFrame {frame}:")
-            for mask_id, result in results.items():
-                if result['discontinuous']:
-                    print(f"  Mask {mask_id}:")
-                    print(f"    Number of components: {result['num_components']}")
-                    print(f"    Component sizes: {result['component_sizes']}")
-
-    print("\nContinuous segments:")
-    if not continuous_results:
-        print("No continuous segments found.")
-    else:
-        print(f"Found {len(continuous_results)} frames with all continuous segments.")
-
-    print("\nSegment Statistics:")
-    for mask_id in [2, 3, 4]:
-        print(f"\nMask {mask_id}:")
-        for stat, value in segment_statistics[mask_id].items():
-            print(f"  {stat}: {value:.2f}")
-
-    print(f"\nTotal frames processed: {len(modified_segments)}")
-    print(f"Frames with discontinuous segments: {len(discontinuous_results)}")
-    print(f"Frames with all continuous segments: {len(continuous_results)}")
-
-
-discontinuous_results, continuous_results, segment_statistics = check_discontinuous_segments(modified_segments)
-
-print_segment_analysis_results(discontinuous_results, continuous_results, segment_statistics, modified_segments)
-
-
-
-## Clean the segments
-    # Filter to keep only masks 2, 3, and 4
-    # Remove small components (min size 3)
-def remove_small_components(mask, min_size=3):
-    labeled_array, num_features = find_connected_components(mask)
-    
-    cleaned_mask = np.zeros_like(mask)
-    for i in range(1, num_features + 1):
-        component = (labeled_array == i)
-        if np.sum(component) > min_size:
-            cleaned_mask = np.logical_or(cleaned_mask, component)
-    
-    return cleaned_mask
-
-def filter_masks(segments):
-    filtered_segments = {}
-    for frame, masks in segments.items():
-        filtered_segments[frame] = {mask_id: mask for mask_id, mask in masks.items() if mask_id in [2, 3, 4]}
-    return filtered_segments
-
-def master_clean_segments(segments, min_size=3):
-    # Step 1: Filter to keep only masks 2, 3, and 4
-    cleaned_segments = filter_masks(segments)
-    
-    # Step 2: Remove small components
-    for frame, masks in cleaned_segments.items():
-        for mask_id, mask in masks.items():
-            cleaned_segments[frame][mask_id] = remove_small_components(mask, min_size)
-    
-    # Add more cleaning operations here as needed
-    # cleaned_segments = another_cleaning_function(cleaned_segments)
-    
-    return cleaned_segments
-
-
-cleaned_segments = master_clean_segments(modified_segments)
-
-discontinuous_results, continuous_results, segment_statistics = check_discontinuous_segments(cleaned_segments)
-print_segment_analysis_results(discontinuous_results, continuous_results, segment_statistics, cleaned_segments)
-
-
-
-### Check for local movement of the segments
-def check_local_movement(cleaned_segments, overlap_threshold=0.25, extended_overlap_threshold=0.10, mask2_threshold=0.10):
-    movement_results = {}
-    frames = sorted(cleaned_segments.keys())
-    
-    for i, current_frame in enumerate(frames):
-        frame_result = {}
-        
-        for mask_id in cleaned_segments[current_frame].keys():
-            current_mask = cleaned_segments[current_frame][mask_id]
-            current_area = np.sum(current_mask)
-            
-            if current_area == 0:
-                frame_result[mask_id] = {
-                    'is_empty': True,
-                    'meets_criteria': False,
-                    'prev_overlaps': [],
-                    'next_overlaps': []
-                }
-                continue
-            
-            # Check previous frames
-            prev_overlaps = []
-            for j in range(max(0, i-3), i):
-                prev_frame = frames[j]
-                prev_mask = cleaned_segments[prev_frame][mask_id]
-                overlap = np.sum(np.logical_and(current_mask, prev_mask))
-                prev_overlaps.append(overlap / current_area)
-            
-            # Check next frames
-            next_overlaps = []
-            for j in range(i+1, min(len(frames), i+4)):
-                next_frame = frames[j]
-                next_mask = cleaned_segments[next_frame][mask_id]
-                overlap = np.sum(np.logical_and(current_mask, next_mask))
-                next_overlaps.append(overlap / current_area)
-            
-            # Check if movement criteria are met
-            if mask_id == 2:
-                meets_criteria = all(overlap >= mask2_threshold for overlap in prev_overlaps + next_overlaps)
-            else:
-                meets_criteria = True
-                if len(prev_overlaps) > 0:
-                    meets_criteria = meets_criteria and prev_overlaps[-1] >= overlap_threshold
-                    if len(prev_overlaps) >= 3:
-                        meets_criteria = meets_criteria and all(overlap >= extended_overlap_threshold for overlap in prev_overlaps[:3])
-                if len(next_overlaps) > 0:
-                    meets_criteria = meets_criteria and next_overlaps[0] >= overlap_threshold
-                    if len(next_overlaps) >= 3:
-                        meets_criteria = meets_criteria and all(overlap >= extended_overlap_threshold for overlap in next_overlaps[:3])
-            
-            frame_result[mask_id] = {
-                'is_empty': False,
-                'meets_criteria': meets_criteria,
-                'prev_overlaps': prev_overlaps,
-                'next_overlaps': next_overlaps
-            }
-        
-        movement_results[current_frame] = frame_result
-    
-    return movement_results
-
-def analyze_movement_results(movement_results):
-    total_frames = len(movement_results)
-    masks_meeting_criteria = {2: 0, 3: 0, 4: 0}
-    empty_masks = {2: 0, 3: 0, 4: 0}
-    zero_overlap_masks = {2: [], 3: [], 4: []}
-    not_meeting_criteria_masks = {2: [], 3: [], 4: []}
-    problem_frames = {}
-    
-    for frame, frame_result in movement_results.items():
-        frame_problems = {}
-        for mask_id, mask_result in frame_result.items():
-            if mask_result['is_empty']:
-                empty_masks[mask_id] += 1
-                frame_problems[mask_id] = "Empty mask"
-            elif not mask_result['meets_criteria']:
-                not_meeting_criteria_masks[mask_id].append(frame)
-                all_overlaps = mask_result['prev_overlaps'] + mask_result['next_overlaps']
-                has_zero_overlap = any(overlap == 0 for overlap in all_overlaps)
-                if has_zero_overlap:
-                    zero_overlap_masks[mask_id].append(frame)
-                    frame_problems[mask_id] = {
-                        "zero_overlap": True,
-                        "prev_overlaps": mask_result['prev_overlaps'],
-                        "next_overlaps": mask_result['next_overlaps']
-                    }
-                else:
-                    frame_problems[mask_id] = {
-                        "zero_overlap": False,
-                        "prev_overlaps": mask_result['prev_overlaps'],
-                        "next_overlaps": mask_result['next_overlaps']
-                    }
-            else:
-                masks_meeting_criteria[mask_id] += 1
-        
-        if frame_problems:
-            problem_frames[frame] = frame_problems
-    
-    return {
-        "total_frames": total_frames,
-        "masks_meeting_criteria": masks_meeting_criteria,
-        "empty_masks": empty_masks,
-        "zero_overlap_masks": zero_overlap_masks,
-        "not_meeting_criteria_masks": not_meeting_criteria_masks,
-        "problem_frames": problem_frames
-    }
-
-def print_movement_analysis_summary(analysis_results):
-    print("Local Movement Analysis Summary:")
-    total_frames = analysis_results["total_frames"]
-    
-    print("\nProblem Frames:")
-    for frame, problems in analysis_results["problem_frames"].items():
-        print(f"  Frame {frame}:")
-        for mask_id, problem in problems.items():
-            if problem == "Empty mask":
-                print(f"    Mask {mask_id}: Empty mask")
-            else:
-                if problem["zero_overlap"]:
-                    print(f"    Mask {mask_id}: ZERO OVERLAP")
-                else:
-                    print(f"    Mask {mask_id}:")
-                print(f"      Previous overlaps: {[f'{overlap:.2f}' for overlap in problem['prev_overlaps']]}")
-                print(f"      Next overlaps: {[f'{overlap:.2f}' for overlap in problem['next_overlaps']]}")
-    
-    print("\nSummary Statistics:")
-    for mask_id in [2, 3, 4]:
-        non_empty_frames = total_frames - analysis_results["empty_masks"][mask_id]
-        zero_overlap_frames = analysis_results["zero_overlap_masks"][mask_id]
-        not_meeting_criteria_frames = analysis_results["not_meeting_criteria_masks"][mask_id]
-        if non_empty_frames > 0:
-            percentage = (analysis_results["masks_meeting_criteria"][mask_id] / non_empty_frames) * 100
-            print(f"\nMask {mask_id}:")
-            if mask_id == 2:
-                print("  10% threshold")
-            else:
-                print("  25% adjacent, 10% extended")
-            print(f"  Empty: {analysis_results['empty_masks'][mask_id]}/{total_frames} frames")
-            print(f"  Zero overlap: {len(zero_overlap_frames)}/{non_empty_frames} non-empty frames")
-            if zero_overlap_frames:
-                print(f"    Frames: {', '.join(map(str, zero_overlap_frames))}")
-            print(f"  Bellow threshold: {len(not_meeting_criteria_frames)}/{non_empty_frames} non-empty frames")
-            if not_meeting_criteria_frames:
-                print(f"    Frames: {', '.join(map(str, not_meeting_criteria_frames))}")
-            print(f"  Passed: {analysis_results['masks_meeting_criteria'][mask_id]}/{non_empty_frames} non-empty frames ({percentage:.2f}%)")
-        else:
-            print(f"Mask {mask_id}: Empty in all frames")
-
-
-# Perform the local movement check
-movement_results = check_local_movement(cleaned_segments)
-
-# Analyze the results
-analysis_results = analyze_movement_results(movement_results)
-
-# Print the summary
-print_movement_analysis_summary(analysis_results)
-
-
-
 ###Remove pixels in mask4 that are within min_distance pixels from any pixel in mask3.
 def filter_by_distance(mask3, mask4, min_distance=6, min_pixels=3):
     """
@@ -707,7 +332,394 @@ def master_clean_segments(segments, min_size=3, min_distance=6, min_pixels=3):
     return cleaned_segments
 
 
-cleaned_distance_segments = master_clean_segments(cleaned_segments, min_size=3, min_distance=6, min_pixels=3)
+cleaned_distance_segments = master_clean_segments(loaded_video_segments, min_size=3, min_distance=6, min_pixels=3)
+
+
+
+### Check for overlaps between the segments (Modify masks to remove overlapping pixels)
+def check_mask_overlap(loaded_video_segments):
+    results = {}
+    total_frames = len(loaded_video_segments)
+    frames_with_overlap = 0
+    
+    for frame, masks in loaded_video_segments.items():
+        overlap = False
+        mask_combination = []
+        
+        required_masks = [masks.get(i) for i in range(2, 5)]
+        if all(mask is not None for mask in required_masks): 
+            for i in range(len(required_masks)):
+                for j in range(i+1, len(required_masks)):
+                    overlap_mask = np.logical_and(required_masks[i], required_masks[j])
+                    overlap_count = np.sum(overlap_mask)
+                    if overlap_count > 0:
+                        overlap = True
+                        frames_with_overlap += 1
+                        mask_combination.append((i+2, j+2, overlap_count))
+        
+        if overlap:
+            results[frame] = {
+                'overlap': overlap,
+                'mask_combination': mask_combination
+            }
+
+    print("\nOverlap Analysis Results:")
+    print(f"Total frames analyzed: {total_frames}")
+    
+    if results:
+        print(f"Found overlaps in {frames_with_overlap} frames:")
+        for frame, result in results.items():
+            for combination in result['mask_combination']:
+                print(f"Frame {frame}:  Masks {combination[0]} and {combination[1]} overlap: {combination[2]} pixels")
+    else:
+        print("No overlaps found between any masks in any frames!")
+
+    return results
+
+def remove_overlap(mask1, mask2):
+    overlap = np.logical_and(mask1, mask2)
+    return mask1 & ~overlap, mask2 & ~overlap, np.sum(overlap)
+
+def remove_overlapping_pixels(loaded_video_segments, overlap_results):
+    modified_segments = {}
+    
+    for frame, masks in loaded_video_segments.items():
+        modified_masks = masks.copy()
+        
+        if frame in overlap_results:
+            for combination in overlap_results[frame]['mask_combination']:
+                mask1_id, mask2_id, _ = combination
+                mask1, mask2, _ = remove_overlap(masks[mask1_id], masks[mask2_id])
+                modified_masks[mask1_id] = mask1
+                modified_masks[mask2_id] = mask2
+        
+        modified_segments[frame] = modified_masks
+    
+    return modified_segments
+
+overlap_results = check_mask_overlap(cleaned_distance_segments)
+
+modified_segments = remove_overlapping_pixels(cleaned_distance_segments, overlap_results)
+modified_overlap_results = check_mask_overlap(modified_segments)
+
+
+
+###Check for discontinuous segments (print only)
+def find_connected_components(mask):
+    # Remove the single-dimensional entries
+    mask = np.squeeze(mask)
+    
+    # Use scipy's label function to find connected components
+    labeled_array, num_features = ndimage.label(mask)
+    
+    return labeled_array, num_features
+
+def calculate_statistics(sizes):
+    if not sizes:
+        return {
+            'mean': 0,
+            'median': 0,
+            'min': 0,
+            'max': 0,
+            'std': 0
+        }
+    return {
+        'mean': np.mean(sizes),
+        'median': np.median(sizes),
+        'min': np.min(sizes),
+        'max': np.max(sizes),
+        'std': np.std(sizes)
+    }
+
+def check_discontinuous_segments(modified_segments):
+    discontinuous_results = {}
+    continuous_results = {}
+    segment_statistics = {2: [], 3: [], 4: []}
+
+    for frame, masks in modified_segments.items():
+        frame_results = {}
+
+        for mask_id, mask in masks.items():
+            if mask_id in [2, 3, 4]:  # Only check masks 2, 3, and 4
+                labeled_array, num_features = find_connected_components(mask)
+                
+                component_sizes = [np.sum(labeled_array == i) for i in range(1, num_features + 1)]
+                segment_statistics[mask_id].extend(component_sizes)
+                
+                if num_features > 1:
+                    frame_results[mask_id] = {
+                        'discontinuous': True,
+                        'num_components': num_features,
+                        'component_sizes': component_sizes
+                    }
+                else:
+                    frame_results[mask_id] = {
+                        'discontinuous': False,
+                        'num_components': 1,
+                        'component_sizes': component_sizes
+                    }
+
+        if any(result['discontinuous'] for result in frame_results.values()):
+            discontinuous_results[frame] = frame_results
+        else:
+            continuous_results[frame] = frame_results
+
+    # Calculate statistics for each segment
+    for mask_id in [2, 3, 4]:
+        segment_statistics[mask_id] = calculate_statistics(segment_statistics[mask_id])
+
+    return discontinuous_results, continuous_results, segment_statistics
+
+def print_segment_analysis_results(discontinuous_results, continuous_results, segment_statistics, modified_segments):
+    print("Discontinuous segments:")
+    if not discontinuous_results:
+        print("No discontinuous segments found.")
+    else:
+        print(f"Found discontinuous segments in {len(discontinuous_results)} frames.")
+        print("\nDetails of discontinuous segments:")
+        for frame, results in discontinuous_results.items():
+            print(f"\nFrame {frame}:")
+            for mask_id, result in results.items():
+                if result['discontinuous']:
+                    print(f"  Mask {mask_id}:")
+                    print(f"    Number of components: {result['num_components']}")
+                    print(f"    Component sizes: {result['component_sizes']}")
+
+    print("\nContinuous segments:")
+    if not continuous_results:
+        print("No continuous segments found.")
+    else:
+        print(f"Found {len(continuous_results)} frames with all continuous segments.")
+
+    print("\nSegment Statistics:")
+    for mask_id in [2, 3, 4]:
+        print(f"\nMask {mask_id}:")
+        for stat, value in segment_statistics[mask_id].items():
+            print(f"  {stat}: {value:.2f}")
+
+    print(f"\nTotal frames processed: {len(modified_segments)}")
+    print(f"Frames with discontinuous segments: {len(discontinuous_results)}")
+    print(f"Frames with all continuous segments: {len(continuous_results)}")
+
+
+discontinuous_results, continuous_results, segment_statistics = check_discontinuous_segments(modified_segments)
+
+print_segment_analysis_results(discontinuous_results, continuous_results, segment_statistics, modified_segments)
+
+
+
+## Clean the segments
+    # Filter to keep only masks 2, 3, and 4
+    # Remove small components (min size 3)
+def remove_small_components(mask, min_size=3):
+    labeled_array, num_features = find_connected_components(mask)
+    
+    # First pass: identify components larger than min_size
+    cleaned_mask = np.zeros_like(mask)
+    valid_components = []
+    for i in range(1, num_features + 1):
+        component = (labeled_array == i)
+        size = np.sum(component)
+        if size > min_size:
+            valid_components.append((size, component))
+            cleaned_mask = np.logical_or(cleaned_mask, component)
+    
+    # Second pass: if there are multiple components, keep only the largest
+    if len(valid_components) > 1:
+        # Sort components by size (largest first)
+        valid_components.sort(key=lambda x: x[0], reverse=True)
+        # Keep only the largest component
+        cleaned_mask = valid_components[0][1]
+    
+    return cleaned_mask
+
+def filter_masks(segments):
+    filtered_segments = {}
+    for frame, masks in segments.items():
+        filtered_segments[frame] = {mask_id: mask for mask_id, mask in masks.items() if mask_id in [2, 3, 4]}
+    return filtered_segments
+
+def master_clean_segments(segments, min_size=3):
+    # Step 1: Filter to keep only masks 2, 3, and 4
+    cleaned_segments = filter_masks(segments)
+    
+    # Step 2: Remove small components
+    for frame, masks in cleaned_segments.items():
+        for mask_id, mask in masks.items():
+            cleaned_segments[frame][mask_id] = remove_small_components(mask, min_size)
+    
+    # Add more cleaning operations here as needed
+    # cleaned_segments = another_cleaning_function(cleaned_segments)
+    
+    return cleaned_segments
+
+
+cleaned_segments = master_clean_segments(modified_segments)
+
+discontinuous_results, continuous_results, segment_statistics = check_discontinuous_segments(cleaned_segments)
+print_segment_analysis_results(discontinuous_results, continuous_results, segment_statistics, cleaned_segments)
+
+
+
+### Check for local movement of the segments (print only)
+def check_local_movement(cleaned_segments, overlap_threshold=0.25, extended_overlap_threshold=0.10, mask2_threshold=0.10):
+    movement_results = {}
+    frames = sorted(cleaned_segments.keys())
+    
+    for i, current_frame in enumerate(frames):
+        frame_result = {}
+        
+        for mask_id in cleaned_segments[current_frame].keys():
+            current_mask = cleaned_segments[current_frame][mask_id]
+            current_area = np.sum(current_mask)
+            
+            if current_area == 0:
+                frame_result[mask_id] = {
+                    'is_empty': True,
+                    'meets_criteria': False,
+                    'prev_overlaps': [],
+                    'next_overlaps': []
+                }
+                continue
+            
+            # Check previous frames
+            prev_overlaps = []
+            for j in range(max(0, i-3), i):
+                prev_frame = frames[j]
+                prev_mask = cleaned_segments[prev_frame][mask_id]
+                overlap = np.sum(np.logical_and(current_mask, prev_mask))
+                prev_overlaps.append(overlap / current_area)
+            
+            # Check next frames
+            next_overlaps = []
+            for j in range(i+1, min(len(frames), i+4)):
+                next_frame = frames[j]
+                next_mask = cleaned_segments[next_frame][mask_id]
+                overlap = np.sum(np.logical_and(current_mask, next_mask))
+                next_overlaps.append(overlap / current_area)
+            
+            # Check if movement criteria are met
+            if mask_id == 2:
+                meets_criteria = all(overlap >= mask2_threshold for overlap in prev_overlaps + next_overlaps)
+            else:
+                meets_criteria = True
+                if len(prev_overlaps) > 0:
+                    meets_criteria = meets_criteria and prev_overlaps[-1] >= overlap_threshold
+                    if len(prev_overlaps) >= 3:
+                        meets_criteria = meets_criteria and all(overlap >= extended_overlap_threshold for overlap in prev_overlaps[:3])
+                if len(next_overlaps) > 0:
+                    meets_criteria = meets_criteria and next_overlaps[0] >= overlap_threshold
+                    if len(next_overlaps) >= 3:
+                        meets_criteria = meets_criteria and all(overlap >= extended_overlap_threshold for overlap in next_overlaps[:3])
+            
+            frame_result[mask_id] = {
+                'is_empty': False,
+                'meets_criteria': meets_criteria,
+                'prev_overlaps': prev_overlaps,
+                'next_overlaps': next_overlaps
+            }
+        
+        movement_results[current_frame] = frame_result
+    
+    return movement_results
+
+def analyze_movement_results(movement_results):
+    total_frames = len(movement_results)
+    masks_meeting_criteria = {2: 0, 3: 0, 4: 0}
+    empty_masks = {2: 0, 3: 0, 4: 0}
+    zero_overlap_masks = {2: [], 3: [], 4: []}
+    not_meeting_criteria_masks = {2: [], 3: [], 4: []}
+    problem_frames = {}
+    
+    for frame, frame_result in movement_results.items():
+        frame_problems = {}
+        for mask_id, mask_result in frame_result.items():
+            if mask_result['is_empty']:
+                empty_masks[mask_id] += 1
+                frame_problems[mask_id] = "Empty mask"
+            elif not mask_result['meets_criteria']:
+                not_meeting_criteria_masks[mask_id].append(frame)
+                all_overlaps = mask_result['prev_overlaps'] + mask_result['next_overlaps']
+                has_zero_overlap = any(overlap == 0 for overlap in all_overlaps)
+                if has_zero_overlap:
+                    zero_overlap_masks[mask_id].append(frame)
+                    frame_problems[mask_id] = {
+                        "zero_overlap": True,
+                        "prev_overlaps": mask_result['prev_overlaps'],
+                        "next_overlaps": mask_result['next_overlaps']
+                    }
+                else:
+                    frame_problems[mask_id] = {
+                        "zero_overlap": False,
+                        "prev_overlaps": mask_result['prev_overlaps'],
+                        "next_overlaps": mask_result['next_overlaps']
+                    }
+            else:
+                masks_meeting_criteria[mask_id] += 1
+        
+        if frame_problems:
+            problem_frames[frame] = frame_problems
+    
+    return {
+        "total_frames": total_frames,
+        "masks_meeting_criteria": masks_meeting_criteria,
+        "empty_masks": empty_masks,
+        "zero_overlap_masks": zero_overlap_masks,
+        "not_meeting_criteria_masks": not_meeting_criteria_masks,
+        "problem_frames": problem_frames
+    }
+
+def print_movement_analysis_summary(analysis_results):
+    print("Local Movement Analysis Summary:")
+    total_frames = analysis_results["total_frames"]
+    
+    print("\nProblem Frames:")
+    for frame, problems in analysis_results["problem_frames"].items():
+        print(f"  Frame {frame}:")
+        for mask_id, problem in problems.items():
+            if problem == "Empty mask":
+                print(f"    Mask {mask_id}: Empty mask")
+            else:
+                if problem["zero_overlap"]:
+                    print(f"    Mask {mask_id}: ZERO OVERLAP")
+                else:
+                    print(f"    Mask {mask_id}:")
+                print(f"      Previous overlaps: {[f'{overlap:.2f}' for overlap in problem['prev_overlaps']]}")
+                print(f"      Next overlaps: {[f'{overlap:.2f}' for overlap in problem['next_overlaps']]}")
+    
+    print("\nSummary Statistics:")
+    for mask_id in [2, 3, 4]:
+        non_empty_frames = total_frames - analysis_results["empty_masks"][mask_id]
+        zero_overlap_frames = analysis_results["zero_overlap_masks"][mask_id]
+        not_meeting_criteria_frames = analysis_results["not_meeting_criteria_masks"][mask_id]
+        if non_empty_frames > 0:
+            percentage = (analysis_results["masks_meeting_criteria"][mask_id] / non_empty_frames) * 100
+            print(f"\nMask {mask_id}:")
+            if mask_id == 2:
+                print("  10% threshold")
+            else:
+                print("  25% adjacent, 10% extended")
+            print(f"  Empty: {analysis_results['empty_masks'][mask_id]}/{total_frames} frames")
+            print(f"  Zero overlap: {len(zero_overlap_frames)}/{non_empty_frames} non-empty frames")
+            if zero_overlap_frames:
+                print(f"    Frames: {', '.join(map(str, zero_overlap_frames))}")
+            print(f"  Bellow threshold: {len(not_meeting_criteria_frames)}/{non_empty_frames} non-empty frames")
+            if not_meeting_criteria_frames:
+                print(f"    Frames: {', '.join(map(str, not_meeting_criteria_frames))}")
+            print(f"  Passed: {analysis_results['masks_meeting_criteria'][mask_id]}/{non_empty_frames} non-empty frames ({percentage:.2f}%)")
+        else:
+            print(f"Mask {mask_id}: Empty in all frames")
+
+
+# Perform the local movement check
+movement_results = check_local_movement(cleaned_segments)
+
+# Analyze the results
+analysis_results = analyze_movement_results(movement_results)
+
+# Print the summary
+print_movement_analysis_summary(analysis_results)
+
 
 
 
@@ -888,7 +900,7 @@ def process_all_masks(frame_masks: Dict) -> Dict:
     return processed_masks
 
 
-processed_masks = process_all_masks(cleaned_distance_segments)
+processed_masks = process_all_masks(cleaned_segments)
 
 
 
@@ -1328,8 +1340,8 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
 
 # Example usage:
 """
-image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190305_04_crop"
-masks_dict = loaded_video_segments
+image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190314_04_crop"
+masks_dict = loaded_segments
 output_path = "filled_segments_video.mp4"
 
 create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=1)
