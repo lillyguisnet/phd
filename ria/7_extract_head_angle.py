@@ -913,8 +913,13 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
                 'frame': frame_idx,
                 'object_id': obj_id,
                 'angle_degrees': frame_results[frame_idx][obj_id]['angle_degrees'],
+                'bend_location': frame_results[frame_idx][obj_id]['bend_location'],
+                'bend_magnitude': frame_results[frame_idx][obj_id]['bend_magnitude'],
+                'bend_position_y': frame_results[frame_idx][obj_id]['bend_position'][0],
+                'bend_position_x': frame_results[frame_idx][obj_id]['bend_position'][1],
                 'head_mag': frame_results[frame_idx][obj_id]['head_mag'],
                 'body_mag': frame_results[frame_idx][obj_id]['body_mag'],
+                'is_straight': frame_results[frame_idx][obj_id].get('is_straight', abs(frame_results[frame_idx][obj_id]['angle_degrees']) <= straight_threshold),
                 'error': frame_results[frame_idx][obj_id].get('error', None)
             })
     
@@ -928,49 +933,70 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
         deviation_threshold=deviation_threshold
     )
     
-    # Final pass: Recalculate bend positions using smoothed angles
+    # Final pass: Recalculate bend positions based on smoothed angles
     final_data = []
     
     # Group by object_id to maintain continuity
     for obj_id in smoothed_df['object_id'].unique():
         obj_data = smoothed_df[smoothed_df['object_id'] == obj_id]
         
+        prev_angle = None
         for _, row in obj_data.iterrows():
             frame_idx = row['frame']
-            original_result = frame_results[frame_idx][obj_id]
+            # Get the corresponding skeleton
+            skeleton = truncated_skeletons[frame_idx][obj_id][0]
             
-            # Create final result using smoothed angle but keeping/interpolating other values
+            # Calculate bend position with the smoothed angle
+            new_result = calculate_head_angle_with_positions_and_bend(
+                skeleton,
+                prev_angle=prev_angle,
+                min_vector_length=min_vector_length,
+                restriction_point=restriction_point,
+                straight_threshold=straight_threshold
+            )
+            prev_angle = row['angle_degrees']
+            
+            # Use the smoothed angle from the dataframe but updated bend calculations
+            is_straight = abs(row['angle_degrees']) <= straight_threshold
+            
+            # Set bend values based on straight vs non-straight
+            if is_straight:
+                bend_location = 0
+                bend_magnitude = 0
+                bend_position_y = 0
+                bend_position_x = 0
+            else:
+                # Use calculated values
+                bend_location = new_result['bend_location']
+                bend_magnitude = new_result['bend_magnitude']
+                bend_position_y = new_result['bend_position'][0]
+                bend_position_x = new_result['bend_position'][1]
+            
             final_result = {
                 'frame': frame_idx,
                 'object_id': obj_id,
                 'angle_degrees': row['angle_degrees'],  # Use smoothed angle
-                'bend_location': original_result['bend_location'],
-                'bend_magnitude': original_result['bend_magnitude'],
-                'bend_position_y': original_result['bend_position'][0],
-                'bend_position_x': original_result['bend_position'][1],
-                'head_mag': original_result['head_mag'],
-                'body_mag': original_result['body_mag'],
+                'bend_location': bend_location,
+                'bend_magnitude': bend_magnitude,
+                'bend_position_y': bend_position_y,
+                'bend_position_x': bend_position_x,
+                'head_mag': new_result['head_mag'],
+                'body_mag': new_result['body_mag'],
                 'is_noise_peak': row['is_noise_peak'],
                 'peak_deviation': row['peak_deviation'],
                 'window_size_used': row['window_size_used'],
-                'error': original_result.get('error', None)
+                'is_straight': is_straight,
+                'error': new_result.get('error', None)
             }
             
             final_data.append(final_result)
     
     final_df = pd.DataFrame(final_data)
     
-    # Apply bend interpolation for straight frames
-    final_df = interpolate_straight_frames(final_df, straight_threshold=straight_threshold)
-    
-    # Final validation: Ensure all frames within straight threshold have zero bend values
-    straight_mask = final_df['angle_degrees'].abs() <= straight_threshold
-    if straight_mask.any():
-        print(f"Setting bend values to 0 for {straight_mask.sum()} straight frames")
-        final_df.loc[straight_mask, 'bend_location'] = 0
-        final_df.loc[straight_mask, 'bend_magnitude'] = 0
-        final_df.loc[straight_mask, ['bend_position_x', 'bend_position_y']] = 0
-        final_df.loc[straight_mask, 'is_straight'] = True
+    # Final validation check for correct values
+    straight_count = final_df[final_df['is_straight'] == True].shape[0]
+    non_straight_with_bends = final_df[(final_df['is_straight'] == False) & (final_df['bend_location'] > 0)].shape[0]
+    print(f"Final validation - Straight frames: {straight_count}, Non-straight with bend values: {non_straight_with_bends}")
     
     # Add warning column for interpolated/default values
     final_df['has_warning'] = final_df['error'].notna()
@@ -984,17 +1010,6 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
         for error in final_df[final_df['has_warning']]['error'].unique()[:5]:
             count = final_df[final_df['error'] == error].shape[0]
             print(f"- {error}: {count} frames")
-    
-    # Verify no straight frames have non-zero bend values
-    verification_mask = (final_df['angle_degrees'].abs() <= straight_threshold) & \
-                       ((final_df['bend_location'] != 0) | \
-                        (final_df['bend_magnitude'] != 0) | \
-                        (final_df['bend_position_x'] != 0) | \
-                        (final_df['bend_position_y'] != 0))
-    if verification_mask.any():
-        print("\nWARNING: Found straight frames with non-zero bend values!")
-        print("Example problematic frames:")
-        print(final_df[verification_mask].head())
     
     return final_df
 
@@ -1445,9 +1460,7 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
     print(f"Video saved to {output_path}")
 
 
-# Example usage:
-"""
-video_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg/AG_WT-MMH99_10s_20190221_02"
+video_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg/AG_WT-MMH99_10s_20190306_02"
 image_dir = video_dir
 bottom_masks = head_segments
 top_masks = truncated_skeletons
@@ -1464,4 +1477,3 @@ create_layered_mask_video(
     bottom_alpha=0.3,
     top_alpha=0.7
 )
-"""

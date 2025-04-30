@@ -72,13 +72,12 @@ frame_names = [
     if os.path.splitext(p)[-1].lower() in [".jpg", ".jpeg"]
 ]
 frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
-frame_names
 
 inference_state = predictor.init_state(video_path=random_video_dir)
 
 
-points=np.array([[260, 365], [240, 375]], dtype=np.float32) #RIA region
-labels=np.array([1, 1], np.int32)
+points=np.array([[250, 350], [260, 355], [250, 450]], dtype=np.float32) #RIA region
+labels=np.array([1, 1, 0], np.int32)
 
 prompts = {}
 ann_frame_idx = len(frame_names) - 1 # Use the last frame

@@ -169,11 +169,53 @@ def fill_missing_masks(video_segments: Dict[int, Dict[int, np.ndarray]], require
     return filled_segments
 
 # Add this line after loading the video segments and before starting the processing
-loaded_video_segments = fill_missing_masks(loaded_video_segments)
+filled_video_segments = fill_missing_masks(loaded_video_segments)
 
 
-###Remove pixels in mask4 that are within min_distance pixels from any pixel in mask3.
-def filter_by_distance(mask3, mask4, min_distance=6, min_pixels=3):
+
+###Clean size/distance. Remove pixels in mask4 that are within min_distance pixels from any pixel in mask3.
+def find_connected_components(mask):
+    # Remove the single-dimensional entries
+    mask = np.squeeze(mask)
+    
+    # Use scipy's label function to find connected components
+    labeled_array, num_features = ndimage.label(mask)
+    
+    return labeled_array, num_features
+
+def filter_masks(segments):
+    """
+    Filter out masks that are not 2, 3, or 4.
+    """
+    
+    filtered_segments = {}
+    for frame, masks in segments.items():
+        filtered_segments[frame] = {mask_id: mask for mask_id, mask in masks.items() if mask_id in [2, 3, 4]}
+    return filtered_segments
+
+def remove_small_components(mask, min_size=4):
+    labeled_array, num_features = find_connected_components(mask)
+    
+    # First pass: identify components larger than min_size
+    cleaned_mask = np.zeros_like(mask)
+    valid_components = []
+    for i in range(1, num_features + 1):
+        component = (labeled_array == i)
+        size = np.sum(component)
+        if size > min_size:
+            valid_components.append((size, component))
+            cleaned_mask = np.logical_or(cleaned_mask, component)
+    
+    # Second pass: if there are multiple components, keep only the largest
+    if len(valid_components) > 1:
+        # Sort components by size (largest first)
+        valid_components.sort(key=lambda x: x[0], reverse=True)
+        # Keep only the largest component
+        cleaned_mask = valid_components[0][1]
+    
+    return cleaned_mask
+
+def filter_by_distance(mask3, mask4, min_distance=5, min_pixels=4):
     """
     Filter out pixels in mask4 that are within min_distance pixels from any pixel in mask3.
     If all pixels would be filtered out, keep the min_pixels furthest pixels.
@@ -241,8 +283,7 @@ def filter_by_distance(mask3, mask4, min_distance=6, min_pixels=3):
     
     return filtered_mask4, np.sum(mask4) - np.sum(filtered_mask4)  # Return pixels removed count
 
-
-def master_clean_segments(segments, min_size=3, min_distance=6, min_pixels=3):
+def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
     """
     Master function to clean all segments with multiple cleaning operations.
     
@@ -332,7 +373,8 @@ def master_clean_segments(segments, min_size=3, min_distance=6, min_pixels=3):
     return cleaned_segments
 
 
-cleaned_distance_segments = master_clean_segments(loaded_video_segments, min_size=3, min_distance=6, min_pixels=3)
+cleaned_distance_segments = distance_clean_segments(filled_video_segments, min_size=4, min_distance=5, min_pixels=4)
+
 
 
 
@@ -402,162 +444,6 @@ overlap_results = check_mask_overlap(cleaned_distance_segments)
 modified_segments = remove_overlapping_pixels(cleaned_distance_segments, overlap_results)
 modified_overlap_results = check_mask_overlap(modified_segments)
 
-
-
-###Check for discontinuous segments (print only)
-def find_connected_components(mask):
-    # Remove the single-dimensional entries
-    mask = np.squeeze(mask)
-    
-    # Use scipy's label function to find connected components
-    labeled_array, num_features = ndimage.label(mask)
-    
-    return labeled_array, num_features
-
-def calculate_statistics(sizes):
-    if not sizes:
-        return {
-            'mean': 0,
-            'median': 0,
-            'min': 0,
-            'max': 0,
-            'std': 0
-        }
-    return {
-        'mean': np.mean(sizes),
-        'median': np.median(sizes),
-        'min': np.min(sizes),
-        'max': np.max(sizes),
-        'std': np.std(sizes)
-    }
-
-def check_discontinuous_segments(modified_segments):
-    discontinuous_results = {}
-    continuous_results = {}
-    segment_statistics = {2: [], 3: [], 4: []}
-
-    for frame, masks in modified_segments.items():
-        frame_results = {}
-
-        for mask_id, mask in masks.items():
-            if mask_id in [2, 3, 4]:  # Only check masks 2, 3, and 4
-                labeled_array, num_features = find_connected_components(mask)
-                
-                component_sizes = [np.sum(labeled_array == i) for i in range(1, num_features + 1)]
-                segment_statistics[mask_id].extend(component_sizes)
-                
-                if num_features > 1:
-                    frame_results[mask_id] = {
-                        'discontinuous': True,
-                        'num_components': num_features,
-                        'component_sizes': component_sizes
-                    }
-                else:
-                    frame_results[mask_id] = {
-                        'discontinuous': False,
-                        'num_components': 1,
-                        'component_sizes': component_sizes
-                    }
-
-        if any(result['discontinuous'] for result in frame_results.values()):
-            discontinuous_results[frame] = frame_results
-        else:
-            continuous_results[frame] = frame_results
-
-    # Calculate statistics for each segment
-    for mask_id in [2, 3, 4]:
-        segment_statistics[mask_id] = calculate_statistics(segment_statistics[mask_id])
-
-    return discontinuous_results, continuous_results, segment_statistics
-
-def print_segment_analysis_results(discontinuous_results, continuous_results, segment_statistics, modified_segments):
-    print("Discontinuous segments:")
-    if not discontinuous_results:
-        print("No discontinuous segments found.")
-    else:
-        print(f"Found discontinuous segments in {len(discontinuous_results)} frames.")
-        print("\nDetails of discontinuous segments:")
-        for frame, results in discontinuous_results.items():
-            print(f"\nFrame {frame}:")
-            for mask_id, result in results.items():
-                if result['discontinuous']:
-                    print(f"  Mask {mask_id}:")
-                    print(f"    Number of components: {result['num_components']}")
-                    print(f"    Component sizes: {result['component_sizes']}")
-
-    print("\nContinuous segments:")
-    if not continuous_results:
-        print("No continuous segments found.")
-    else:
-        print(f"Found {len(continuous_results)} frames with all continuous segments.")
-
-    print("\nSegment Statistics:")
-    for mask_id in [2, 3, 4]:
-        print(f"\nMask {mask_id}:")
-        for stat, value in segment_statistics[mask_id].items():
-            print(f"  {stat}: {value:.2f}")
-
-    print(f"\nTotal frames processed: {len(modified_segments)}")
-    print(f"Frames with discontinuous segments: {len(discontinuous_results)}")
-    print(f"Frames with all continuous segments: {len(continuous_results)}")
-
-
-discontinuous_results, continuous_results, segment_statistics = check_discontinuous_segments(modified_segments)
-
-print_segment_analysis_results(discontinuous_results, continuous_results, segment_statistics, modified_segments)
-
-
-
-## Clean the segments
-    # Filter to keep only masks 2, 3, and 4
-    # Remove small components (min size 3)
-def remove_small_components(mask, min_size=3):
-    labeled_array, num_features = find_connected_components(mask)
-    
-    # First pass: identify components larger than min_size
-    cleaned_mask = np.zeros_like(mask)
-    valid_components = []
-    for i in range(1, num_features + 1):
-        component = (labeled_array == i)
-        size = np.sum(component)
-        if size > min_size:
-            valid_components.append((size, component))
-            cleaned_mask = np.logical_or(cleaned_mask, component)
-    
-    # Second pass: if there are multiple components, keep only the largest
-    if len(valid_components) > 1:
-        # Sort components by size (largest first)
-        valid_components.sort(key=lambda x: x[0], reverse=True)
-        # Keep only the largest component
-        cleaned_mask = valid_components[0][1]
-    
-    return cleaned_mask
-
-def filter_masks(segments):
-    filtered_segments = {}
-    for frame, masks in segments.items():
-        filtered_segments[frame] = {mask_id: mask for mask_id, mask in masks.items() if mask_id in [2, 3, 4]}
-    return filtered_segments
-
-def master_clean_segments(segments, min_size=3):
-    # Step 1: Filter to keep only masks 2, 3, and 4
-    cleaned_segments = filter_masks(segments)
-    
-    # Step 2: Remove small components
-    for frame, masks in cleaned_segments.items():
-        for mask_id, mask in masks.items():
-            cleaned_segments[frame][mask_id] = remove_small_components(mask, min_size)
-    
-    # Add more cleaning operations here as needed
-    # cleaned_segments = another_cleaning_function(cleaned_segments)
-    
-    return cleaned_segments
-
-
-cleaned_segments = master_clean_segments(modified_segments)
-
-discontinuous_results, continuous_results, segment_statistics = check_discontinuous_segments(cleaned_segments)
-print_segment_analysis_results(discontinuous_results, continuous_results, segment_statistics, cleaned_segments)
 
 
 
@@ -710,20 +596,17 @@ def print_movement_analysis_summary(analysis_results):
         else:
             print(f"Mask {mask_id}: Empty in all frames")
 
-
 # Perform the local movement check
-movement_results = check_local_movement(cleaned_segments)
+movement_results = check_local_movement(modified_segments)
 
-# Analyze the results
+# Analyze and print results
 analysis_results = analyze_movement_results(movement_results)
-
-# Print the summary
 print_movement_analysis_summary(analysis_results)
 
 
 
 
-###Align largest segment
+### Align largest segment
 def get_mask_orientation(mask_3d):
     """
     Get the orientation of a binary mask using PCA.
@@ -900,7 +783,7 @@ def process_all_masks(frame_masks: Dict) -> Dict:
     return processed_masks
 
 
-processed_masks = process_all_masks(cleaned_segments)
+processed_masks = process_all_masks(modified_segments)
 
 
 
@@ -1113,6 +996,7 @@ final_masks = remove_overlaps_from_masks(processed_masks)
 
 
 
+
 #Save clean aligned segments to h5
 def save_cleaned_segments_to_h5(cleaned_segments, filename):
     # Create the output filename
@@ -1243,9 +1127,10 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
     COLORS = [
         (255, 0, 0),    # Red
         (0, 255, 0),    # Green
+                (0, 255, 255),  # Cyan
         (0, 0, 255),    # Blue
         (255, 0, 255),  # Magenta
-        (0, 255, 255),  # Cyan
+
         (128, 0, 0),    # Maroon
         (128, 0, 128),  # Purple
         (0, 0, 128),    # Navy
@@ -1338,14 +1223,17 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
     out.release()
     print(f"Video saved to {output_path}")
 
-# Example usage:
-"""
-image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190314_04_crop"
+
+image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190306_02_crop"
 masks_dict = loaded_segments
 output_path = "filled_segments_video.mp4"
 
 create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=1)
-"""
+
+
+
+
+
 
 
 

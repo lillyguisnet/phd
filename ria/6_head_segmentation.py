@@ -76,7 +76,7 @@ inference_state = predictor.init_state(video_path=video_dir)
 prompts = {}
 ann_frame_idx = 0  #frame index
 ann_obj_id = 2  #object id
-points = np.array([[250, 250], [250, 400]], dtype=np.float32)
+points = np.array([[250, 250], [250, 400]], dtype=np.float32) #whole worm body
 labels = np.array([1, 1], np.int32)
 prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -233,14 +233,13 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
     out.release()
     print(f"Video saved to {output_path}")
 
-# Example usage:
-"""
+
 image_dir = video_dir
 masks_dict = video_segments
 output_path = "ff_head_segments_video.mp4"
 
-create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=1)
-"""
+create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.98)
+
 
 
 
