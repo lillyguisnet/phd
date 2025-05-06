@@ -341,6 +341,8 @@ def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
     modifications = {
         'small_components_modified_frames': {2: [], 3: [], 4: []},
         'small_components_pixels_removed': {2: {}, 3: {}, 4: {}}, # frame: count
+        'overlap_removal_modified_frames': { (2,3): [], (2,4): [], (3,4): [] }, # (mask_id1, mask_id2): [frames]
+        'overlap_pixels_removed': { (2,3): {}, (2,4): {}, (3,4): {} }, # (mask_id1, mask_id2): {frame: count}
         'distance_filter_modified_frames': [], 
         'distance_filter_pixels_removed': {3: {}, 4: {}}  # frame: count
     }
@@ -361,16 +363,65 @@ def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
                     modifications['small_components_pixels_removed'][mask_id].get(frame, 0) + pixels_removed
                 
             cleaned_segments[frame][mask_id] = cleaned_mask
+
+    # Step 3: Remove overlapping pixels between mask pairs (2&3, 2&4, 3&4)
+    for frame, masks in cleaned_segments.items():
+        # Ensure masks are squeezed to 2D for overlap operations
+        current_masks = {mid: np.squeeze(m) for mid, m in masks.items() if m is not None}
+
+        mask_ids = sorted([mid for mid in current_masks.keys() if np.sum(current_masks[mid]) > 0]) # Process only non-empty masks
+
+        for i in range(len(mask_ids)):
+            for j in range(i + 1, len(mask_ids)):
+                id1, id2 = mask_ids[i], mask_ids[j]
+                
+                # Ensure we are working with copies if they exist in cleaned_segments for this frame
+                m1 = current_masks.get(id1)
+                m2 = current_masks.get(id2)
+
+                if m1 is None or m2 is None: # Should not happen due to mask_ids logic but defensive
+                    continue
+
+                overlap = np.logical_and(m1, m2)
+                overlap_count = np.sum(overlap)
+
+                if overlap_count > 0:
+                    pair_key = tuple(sorted((id1, id2))) # Consistent key for modifications
+                    
+                    # Remove overlap: pixels in overlap are removed from both masks
+                    m1_cleaned = np.logical_and(m1, np.logical_not(overlap))
+                    m2_cleaned = np.logical_and(m2, np.logical_not(overlap))
+                    
+                    # Update the masks in cleaned_segments (ensure they go back to 3D if that's the convention)
+                    # Assuming original masks in `segments` could be 3D (1,H,W)
+                    # and filter_masks and remove_small_components preserve this or work with squeezed versions.
+                    # Let's ensure they are 2D for now and handle 3D conversion at the end if necessary.
+                    cleaned_segments[frame][id1] = m1_cleaned
+                    cleaned_segments[frame][id2] = m2_cleaned
+                    current_masks[id1] = m1_cleaned # Update local copy for subsequent overlaps in same frame
+                    current_masks[id2] = m2_cleaned
+
+                    if frame not in modifications['overlap_removal_modified_frames'].get(pair_key, []):
+                        modifications['overlap_removal_modified_frames'].setdefault(pair_key, []).append(frame)
+                    
+                    modifications['overlap_pixels_removed'].setdefault(pair_key, {})[frame] = \
+                        modifications['overlap_pixels_removed'][pair_key].get(frame, 0) + overlap_count
     
-    # Step 3: Filter mask3 and mask4 based on distance from each other
+    # Step 4: Filter mask3 and mask4 based on distance from each other
     for frame, masks in cleaned_segments.items():
         if 3 in masks and 4 in masks:
-            original_mask3 = masks[3]
-            original_mask4 = masks[4]
-
-            # Proceed even if one is empty, filter_by_distance handles it by not changing the empty mask
-            # and not filtering the other mask based on an empty mask.
+            # Ensure masks are 2D for filter_by_distance
+            original_mask3 = np.squeeze(masks[3]) if masks[3] is not None else np.zeros_like(next(iter(masks.values()))[0], dtype=bool)
+            original_mask4 = np.squeeze(masks[4]) if masks[4] is not None else np.zeros_like(next(iter(masks.values()))[0], dtype=bool)
             
+            if masks[3] is None: # If mask was entirely removed by overlap or was initially empty
+                original_mask3_shape = np.squeeze(segments[frame].get(3, np.zeros((1,10,10)))).shape # Get a reference shape
+                original_mask3 = np.zeros(original_mask3_shape, dtype=bool)
+            if masks[4] is None:
+                original_mask4_shape = np.squeeze(segments[frame].get(4, np.zeros((1,10,10)))).shape
+                original_mask4 = np.zeros(original_mask4_shape, dtype=bool)
+
+
             filtered_m3, filtered_m4, removed_m3, removed_m4 = filter_by_distance(
                 original_mask3,
                 original_mask4,
@@ -383,14 +434,16 @@ def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
                     modifications['distance_filter_modified_frames'].append(frame)
                 modifications['distance_filter_pixels_removed'][3][frame] = \
                     modifications['distance_filter_pixels_removed'][3].get(frame, 0) + removed_m3
-                cleaned_segments[frame][3] = filtered_m3
+            # Update mask 3 if it exists or if it was modified (it will be 2D from filter_by_distance)
+            cleaned_segments[frame][3] = filtered_m3
             
             if removed_m4 > 0:
                 if frame not in modifications['distance_filter_modified_frames']:
                     modifications['distance_filter_modified_frames'].append(frame)
                 modifications['distance_filter_pixels_removed'][4][frame] = \
                     modifications['distance_filter_pixels_removed'][4].get(frame, 0) + removed_m4
-                cleaned_segments[frame][4] = filtered_m4
+            # Update mask 4 if it exists or if it was modified
+            cleaned_segments[frame][4] = filtered_m4
     
     # Print summary of modifications
     print("\nSegment Cleaning Summary:")
@@ -406,6 +459,21 @@ def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
             print(f"    Average pixels removed per modified frame: {avg_pixels_sc:.2f}")
         else:
             print(f"  Mask {mask_id}: No frames modified by small component removal")
+
+    print("\nOverlap Removal:")
+    any_overlap_removed = False
+    for pair_key, modified_frames_overlap in modifications['overlap_removal_modified_frames'].items():
+        if modified_frames_overlap:
+            any_overlap_removed = True
+            sorted_frames_overlap = sorted(list(set(modified_frames_overlap)))
+            pixels_removed_map = modifications['overlap_pixels_removed'].get(pair_key, {})
+            total_pixels_overlap = sum(pixels_removed_map.get(f, 0) for f in sorted_frames_overlap)
+            avg_pixels_overlap = total_pixels_overlap / len(sorted_frames_overlap) if len(sorted_frames_overlap) > 0 else 0
+            print(f"  Masks {pair_key[0]} & {pair_key[1]}:")
+            print(f"    Frames with overlap removed: {sorted_frames_overlap}")
+            print(f"    Average overlapping pixels removed per modified frame: {avg_pixels_overlap:.2f}")
+    if not any_overlap_removed:
+        print("  No overlaps removed between any mask pairs.")
             
     print("\nDistance Filtering (Masks 3 and 4):")
     distance_modified_overall_frames = sorted(list(set(modifications['distance_filter_modified_frames'])))
@@ -430,14 +498,33 @@ def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
     else:
         print("  No frames modified by distance filtering.")
     
+    # Final check to ensure masks are 3D (1, H, W) if they were originally
+    # This assumes input `segments` might have 3D masks.
+    # And `filter_by_distance` returns 2D masks.
+    # `remove_small_components` also likely operates on and returns 2D.
+    # Overlap removal was done on 2D.
+    ref_mask_shape_dim = None
+    if segments:
+        first_frame_key = next(iter(segments))
+        if segments[first_frame_key]:
+            first_mask_key = next(iter(segments[first_frame_key]))
+            if segments[first_frame_key][first_mask_key] is not None:
+                 ref_mask_shape_dim = len(segments[first_frame_key][first_mask_key].shape)
+
+    if ref_mask_shape_dim == 3:
+        for frame in cleaned_segments:
+            for mask_id in cleaned_segments[frame]:
+                if cleaned_segments[frame][mask_id] is not None and len(cleaned_segments[frame][mask_id].shape) == 2:
+                    cleaned_segments[frame][mask_id] = cleaned_segments[frame][mask_id][np.newaxis, ...]
+    
     return cleaned_segments
 
 
 cleaned_distance_segments = distance_clean_segments(filled_video_segments, min_size=4, min_distance=5, min_pixels=4)
+modified_segments = cleaned_distance_segments 
 
 
-
-
+""" 
 ### Check for overlaps between the segments (Modify masks to remove overlapping pixels)
 def check_mask_overlap(loaded_video_segments):
     results = {}
@@ -499,10 +586,17 @@ def remove_overlapping_pixels(loaded_video_segments, overlap_results):
     
     return modified_segments
 
-overlap_results = check_mask_overlap(cleaned_distance_segments)
+ """# overlap_results = check_mask_overlap(cleaned_distance_segments)
 
-modified_segments = remove_overlapping_pixels(cleaned_distance_segments, overlap_results)
-modified_overlap_results = check_mask_overlap(modified_segments)
+# modified_segments = remove_overlapping_pixels(cleaned_distance_segments, overlap_results)
+# modified_overlap_results = check_mask_overlap(modified_segments)
+
+# Instead, the `cleaned_distance_segments` will now be the `modified_segments`
+
+# Check if any overlaps remain (should be none if logic is correct)
+# We can repurpose check_mask_overlap for verification or rely on the internal summary.
+# For now, let's remove the explicit check after the new distance_clean_segments.
+# modified_overlap_results = check_mask_overlap(modified_segments) 
 
 
 
