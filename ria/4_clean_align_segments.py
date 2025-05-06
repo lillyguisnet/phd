@@ -215,73 +215,107 @@ def remove_small_components(mask, min_size=4):
     
     return cleaned_mask
 
-def filter_by_distance(mask3, mask4, min_distance=5, min_pixels=4):
+def filter_by_distance(mask3_orig: np.ndarray, mask4_orig: np.ndarray, min_distance: float = 5, min_pixels: int = 4) -> Tuple[np.ndarray, np.ndarray, int, int]:
     """
-    Filter out pixels in mask4 that are within min_distance pixels from any pixel in mask3.
-    If all pixels would be filtered out, keep the min_pixels furthest pixels.
-    
+    Filter out pixels in mask3 and mask4 that are within min_distance pixels from each other.
+    If all pixels in a mask would be filtered out or result in fewer than min_pixels,
+    keep the min_pixels furthest pixels for that mask.
+
     Parameters:
     -----------
-    mask3 : numpy.ndarray
+    mask3_orig : numpy.ndarray
         Binary mask for segment 3
-    mask4 : numpy.ndarray
+    mask4_orig : numpy.ndarray
         Binary mask for segment 4
     min_distance : float
-        Minimum Euclidean distance in pixels (default: 6)
+        Minimum Euclidean distance in pixels
     min_pixels : int
-        Minimum number of pixels to preserve from mask4 (default: 3)
-        
+        Minimum number of pixels to preserve from each mask if they would become too small
+
     Returns:
     --------
-    numpy.ndarray
-        Filtered mask4 with pixels too close to mask3 removed
+    Tuple[numpy.ndarray, numpy.ndarray, int, int]
+        - Filtered mask3
+        - Filtered mask4
+        - Number of pixels removed from mask3
+        - Number of pixels removed from mask4
     """
-    # Ensure masks are 2D
-    mask3 = np.squeeze(mask3)
-    mask4 = np.squeeze(mask4)
-    
-    if mask3.ndim != 2 or mask4.ndim != 2:
-        raise ValueError(f"Masks must be 2D after squeezing. Got shapes: mask3={mask3.shape}, mask4={mask4.shape}")
-    
-    # Ensure masks are boolean
-    mask3 = mask3.astype(bool)
-    mask4 = mask4.astype(bool)
-    
-    # Convert to correct format for distanceTransform (8-bit unsigned integer)
-    mask3_uint8 = np.ascontiguousarray(mask3.astype(np.uint8))
-    
-    # Calculate distance transform from mask3
-    dist_transform = cv2.distanceTransform(
-        (1 - mask3_uint8),  # Invert mask3
-        cv2.DIST_L2,
-        cv2.DIST_MASK_PRECISE
-    )
-    
-    # Create initial distance mask
-    distance_mask = dist_transform >= min_distance
-    
-    # Apply the distance mask to mask4
-    filtered_mask4 = np.logical_and(mask4, distance_mask)
-    
-    # If filtered mask is empty or has fewer than min_pixels pixels,
-    # keep the furthest min_pixels pixels from mask3
-    if np.sum(filtered_mask4) < min_pixels:
-        # Get distances for all mask4 pixels
-        mask4_distances = dist_transform[mask4]
-        if len(mask4_distances) > 0:
-            # Sort distances in descending order
-            distances_sorted = np.sort(mask4_distances)[::-1]
-            # Get the distance threshold that keeps exactly min_pixels
-            # (or all pixels if there are fewer than min_pixels)
-            distance_threshold = distances_sorted[min(min_pixels - 1, len(distances_sorted) - 1)]
-            # Create new mask keeping only the furthest pixels
-            filtered_mask4 = np.logical_and(mask4, dist_transform >= distance_threshold)
-    
-    # Ensure output has same shape as input
-    if filtered_mask4.shape != mask4.shape:
-        raise ValueError(f"Output shape {filtered_mask4.shape} doesn't match input shape {mask4.shape}")
-    
-    return filtered_mask4, np.sum(mask4) - np.sum(filtered_mask4)  # Return pixels removed count
+    # Ensure masks are 2D and boolean copies
+    m3 = np.squeeze(mask3_orig).astype(bool)
+    m4 = np.squeeze(mask4_orig).astype(bool)
+
+    if m3.ndim != 2 or m4.ndim != 2:
+        raise ValueError(f"Masks must be 2D after squeezing. Got shapes: m3={m3.shape}, m4={m4.shape}")
+
+    initial_pixels_m3 = np.sum(m3)
+    initial_pixels_m4 = np.sum(m4)
+
+    # Initialize filtered masks as copies of originals
+    filtered_m3 = m3.copy()
+    filtered_m4 = m4.copy()
+
+    # --- Filter m4 based on proximity to original m3 ---
+    if initial_pixels_m3 > 0 and initial_pixels_m4 > 0:
+        m3_uint8 = np.ascontiguousarray(m3.astype(np.uint8))
+        dist_transform_from_m3 = cv2.distanceTransform((1 - m3_uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+        
+        # Initial filtering of m4: remove pixels in original m4 too close to original m3
+        m4_candidate = np.logical_and(m4, dist_transform_from_m3 >= min_distance)
+        
+        # If m4_candidate is too small, try to keep min_pixels furthest pixels from original m4 (relative to m3)
+        if np.sum(m4_candidate) < min_pixels:
+            m4_distances_from_m3 = dist_transform_from_m3[m4] # Distances of original m4 pixels from m3
+            if len(m4_distances_from_m3) > 0: # If original m4 had any pixels
+                distances_sorted = np.sort(m4_distances_from_m3)[::-1]
+                # Threshold to keep min_pixels or all if fewer than min_pixels exist in original m4
+                threshold_idx = min(min_pixels - 1, len(distances_sorted) - 1)
+                # threshold_idx will be >= 0 if len(distances_sorted) > 0
+                distance_threshold_val = distances_sorted[threshold_idx]
+                # Final m4 has pixels from original m4 that are >= this distance_threshold_val from m3
+                filtered_m4 = np.logical_and(m4, dist_transform_from_m3 >= distance_threshold_val)
+            else: # Original m4 was empty, so filtered_m4 remains empty
+                filtered_m4 = np.zeros_like(m4, dtype=bool)
+        else:
+            filtered_m4 = m4_candidate
+    elif initial_pixels_m4 == 0 : # m4 is already empty
+        filtered_m4 = m4.copy() # no change, remains empty
+    # else m3 is empty, so m4 is not filtered based on m3, filtered_m4 remains m4.copy()
+
+    # --- Filter m3 based on proximity to original m4 ---
+    if initial_pixels_m4 > 0 and initial_pixels_m3 > 0:
+        m4_uint8 = np.ascontiguousarray(m4.astype(np.uint8)) # Original m4
+        dist_transform_from_m4 = cv2.distanceTransform((1 - m4_uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+
+        # Initial filtering of m3: remove pixels in original m3 too close to original m4
+        m3_candidate = np.logical_and(m3, dist_transform_from_m4 >= min_distance)
+
+        # If m3_candidate is too small, try to keep min_pixels furthest pixels from original m3 (relative to m4)
+        if np.sum(m3_candidate) < min_pixels:
+            m3_distances_from_m4 = dist_transform_from_m4[m3] # Distances of original m3 pixels from m4
+            if len(m3_distances_from_m4) > 0: # If original m3 had any pixels
+                distances_sorted = np.sort(m3_distances_from_m4)[::-1]
+                threshold_idx = min(min_pixels - 1, len(distances_sorted) - 1)
+                distance_threshold_val = distances_sorted[threshold_idx]
+                filtered_m3 = np.logical_and(m3, dist_transform_from_m4 >= distance_threshold_val)
+            else: # Original m3 was empty
+                filtered_m3 = np.zeros_like(m3, dtype=bool)
+        else:
+            filtered_m3 = m3_candidate
+    elif initial_pixels_m3 == 0: # m3 is already empty
+        filtered_m3 = m3.copy() # no change, remains empty
+    # else m4 is empty, so m3 is not filtered based on m4, filtered_m3 remains m3.copy()
+
+
+    pixels_removed_m3_count = initial_pixels_m3 - np.sum(filtered_m3)
+    pixels_removed_m4_count = initial_pixels_m4 - np.sum(filtered_m4)
+
+    # Ensure output has same shape as input (2D squeezed versions)
+    if filtered_m3.shape != m3.shape:
+        raise ValueError(f"Output mask3 shape {filtered_m3.shape} doesn't match input shape {m3.shape}")
+    if filtered_m4.shape != m4.shape:
+        raise ValueError(f"Output mask4 shape {filtered_m4.shape} doesn't match input shape {m4.shape}")
+        
+    return filtered_m3, filtered_m4, pixels_removed_m3_count, pixels_removed_m4_count
 
 def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
     """
@@ -296,7 +330,7 @@ def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
     min_distance : float
         Minimum distance between mask3 and mask4 pixels
     min_pixels : int
-        Minimum number of pixels to preserve from mask4
+        Minimum number of pixels to preserve from mask3 and mask4 during distance filtering
         
     Returns:
     --------
@@ -305,9 +339,10 @@ def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
     """
     # Initialize tracking dictionaries
     modifications = {
-        'small_components': {2: [], 3: [], 4: []},
-        'distance_filtered': [],
-        'pixels_removed': {2: {}, 3: {}, 4: {}}
+        'small_components_modified_frames': {2: [], 3: [], 4: []},
+        'small_components_pixels_removed': {2: {}, 3: {}, 4: {}}, # frame: count
+        'distance_filter_modified_frames': [], 
+        'distance_filter_pixels_removed': {3: {}, 4: {}}  # frame: count
     }
     
     # Step 1: Filter to keep only masks 2, 3, and 4
@@ -316,59 +351,84 @@ def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
     # Step 2: Remove small components
     for frame, masks in cleaned_segments.items():
         for mask_id, mask in masks.items():
-            original_pixels = np.sum(mask)
+            # original_pixels = np.sum(mask) # Not needed here with current modifications structure
             cleaned_mask = remove_small_components(mask, min_size)
             pixels_removed = np.sum(mask) - np.sum(cleaned_mask)
             
             if pixels_removed > 0:
-                modifications['small_components'][mask_id].append(frame)
-                modifications['pixels_removed'][mask_id][frame] = pixels_removed
+                modifications['small_components_modified_frames'][mask_id].append(frame)
+                modifications['small_components_pixels_removed'][mask_id][frame] = \
+                    modifications['small_components_pixels_removed'][mask_id].get(frame, 0) + pixels_removed
                 
             cleaned_segments[frame][mask_id] = cleaned_mask
     
-    # Step 3: Filter mask4 based on distance from mask3
+    # Step 3: Filter mask3 and mask4 based on distance from each other
     for frame, masks in cleaned_segments.items():
         if 3 in masks and 4 in masks:
-            filtered_mask4, pixels_removed = filter_by_distance(
-                masks[3],
-                masks[4],
+            original_mask3 = masks[3]
+            original_mask4 = masks[4]
+
+            # Proceed even if one is empty, filter_by_distance handles it by not changing the empty mask
+            # and not filtering the other mask based on an empty mask.
+            
+            filtered_m3, filtered_m4, removed_m3, removed_m4 = filter_by_distance(
+                original_mask3,
+                original_mask4,
                 min_distance=min_distance,
                 min_pixels=min_pixels
             )
-            if pixels_removed > 0:
-                modifications['distance_filtered'].append(frame)
-                if frame in modifications['pixels_removed'][4]:
-                    modifications['pixels_removed'][4][frame] += pixels_removed
-                else:
-                    modifications['pixels_removed'][4][frame] = pixels_removed
-                    
-            cleaned_segments[frame][4] = filtered_mask4
+            
+            if removed_m3 > 0:
+                if frame not in modifications['distance_filter_modified_frames']:
+                    modifications['distance_filter_modified_frames'].append(frame)
+                modifications['distance_filter_pixels_removed'][3][frame] = \
+                    modifications['distance_filter_pixels_removed'][3].get(frame, 0) + removed_m3
+                cleaned_segments[frame][3] = filtered_m3
+            
+            if removed_m4 > 0:
+                if frame not in modifications['distance_filter_modified_frames']:
+                    modifications['distance_filter_modified_frames'].append(frame)
+                modifications['distance_filter_pixels_removed'][4][frame] = \
+                    modifications['distance_filter_pixels_removed'][4].get(frame, 0) + removed_m4
+                cleaned_segments[frame][4] = filtered_m4
     
     # Print summary of modifications
     print("\nSegment Cleaning Summary:")
     print("\nSmall Components Removed:")
     for mask_id in [2, 3, 4]:
-        modified_frames = modifications['small_components'][mask_id]
-        if modified_frames:
+        modified_frames_sc = sorted(list(set(modifications['small_components_modified_frames'][mask_id])))
+        if modified_frames_sc:
             print(f"  Mask {mask_id}:")
-            print(f"    Modified frames: {sorted(modified_frames)}")
-            total_pixels = sum(modifications['pixels_removed'][mask_id].get(frame, 0) 
-                             for frame in modified_frames)
-            avg_pixels = total_pixels / len(modified_frames)
-            print(f"    Average pixels removed per modified frame: {avg_pixels:.2f}")
+            print(f"    Modified frames: {modified_frames_sc}")
+            total_pixels_sc = sum(modifications['small_components_pixels_removed'][mask_id].get(f, 0) 
+                                 for f in modified_frames_sc)
+            avg_pixels_sc = total_pixels_sc / len(modified_frames_sc) if len(modified_frames_sc) > 0 else 0
+            print(f"    Average pixels removed per modified frame: {avg_pixels_sc:.2f}")
         else:
-            print(f"  Mask {mask_id}: No frames modified")
+            print(f"  Mask {mask_id}: No frames modified by small component removal")
             
-    print("\nDistance Filtering (Mask 4):")
-    distance_filtered_frames = modifications['distance_filtered']
-    if distance_filtered_frames:
-        print(f"  Modified frames: {sorted(distance_filtered_frames)}")
-        distance_pixels = sum(modifications['pixels_removed'][4].get(frame, 0) 
-                            for frame in distance_filtered_frames)
-        avg_distance_pixels = distance_pixels / len(distance_filtered_frames)
-        print(f"  Average pixels removed per modified frame: {avg_distance_pixels:.2f}")
+    print("\nDistance Filtering (Masks 3 and 4):")
+    distance_modified_overall_frames = sorted(list(set(modifications['distance_filter_modified_frames'])))
+    if distance_modified_overall_frames:
+        print(f"  Frames with any distance filtering: {distance_modified_overall_frames}")
+        for mask_id_dist in [3, 4]:
+            pixels_removed_by_dist_map = modifications['distance_filter_pixels_removed'][mask_id_dist]
+            
+            actual_modified_frames_for_mask_dist = sorted([
+                f for f in distance_modified_overall_frames 
+                if f in pixels_removed_by_dist_map and pixels_removed_by_dist_map[f] > 0
+            ])
+            
+            if actual_modified_frames_for_mask_dist:
+                total_pixels_dist = sum(pixels_removed_by_dist_map.get(f, 0) for f in actual_modified_frames_for_mask_dist)
+                avg_pixels_dist = total_pixels_dist / len(actual_modified_frames_for_mask_dist) if len(actual_modified_frames_for_mask_dist) > 0 else 0
+                print(f"  Mask {mask_id_dist}:")
+                print(f"    Modified frames by distance: {actual_modified_frames_for_mask_dist}")
+                print(f"    Average pixels removed per modified frame: {avg_pixels_dist:.2f}")
+            else:
+                 print(f"  Mask {mask_id_dist}: No pixels removed by distance filtering.")
     else:
-        print("  No frames modified")
+        print("  No frames modified by distance filtering.")
     
     return cleaned_segments
 
@@ -1224,7 +1284,7 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
     print(f"Video saved to {output_path}")
 
 
-image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190306_02_crop"
+image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190306_03_crop"
 masks_dict = loaded_segments
 output_path = "filled_segments_video.mp4"
 

@@ -76,7 +76,7 @@ frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 inference_state = predictor.init_state(video_path=random_video_dir)
 
 
-points=np.array([[260, 270], [270, 280], [250, 450]], dtype=np.float32) #RIA region
+points=np.array([[245, 350], [265, 360], [250, 450]], dtype=np.float32) #RIA region
 labels=np.array([1, 1, 0], np.int32)
 
 prompts = {}
@@ -219,8 +219,6 @@ def process_frames_fixed_crop(input_folder, output_folder, video_segments, origi
     
     print(f"Cropped frames saved to: {output_folder}")
     return len(frame_files), (crop_height, crop_width)
-
-
 
 
 ###Crop around RIA region
