@@ -196,24 +196,26 @@ def filter_masks(segments):
 def remove_small_components(mask, min_size=4):
     labeled_array, num_features = find_connected_components(mask)
     
-    # First pass: identify components larger than min_size
-    cleaned_mask = np.zeros_like(mask)
-    valid_components = []
+    if num_features == 0:
+        # Mask is already empty
+        return np.zeros_like(mask)
+    
+    if num_features == 1:
+        # Only one component, keep it regardless of size
+        return mask
+
+    # More than one component, find the largest one
+    largest_component_mask = None
+    max_size = 0
+    
     for i in range(1, num_features + 1):
         component = (labeled_array == i)
         size = np.sum(component)
-        if size > min_size:
-            valid_components.append((size, component))
-            cleaned_mask = np.logical_or(cleaned_mask, component)
-    
-    # Second pass: if there are multiple components, keep only the largest
-    if len(valid_components) > 1:
-        # Sort components by size (largest first)
-        valid_components.sort(key=lambda x: x[0], reverse=True)
-        # Keep only the largest component
-        cleaned_mask = valid_components[0][1]
-    
-    return cleaned_mask
+        if size > max_size:
+            max_size = size
+            largest_component_mask = component
+            
+    return largest_component_mask
 
 def filter_by_distance(mask3_orig: np.ndarray, mask4_orig: np.ndarray, min_distance: float = 5, min_pixels: int = 4) -> Tuple[np.ndarray, np.ndarray, int, int]:
     """
@@ -522,81 +524,6 @@ def distance_clean_segments(segments, min_size=4, min_distance=5, min_pixels=4):
 
 cleaned_distance_segments = distance_clean_segments(filled_video_segments, min_size=4, min_distance=5, min_pixels=4)
 modified_segments = cleaned_distance_segments 
-
-
-""" 
-### Check for overlaps between the segments (Modify masks to remove overlapping pixels)
-def check_mask_overlap(loaded_video_segments):
-    results = {}
-    total_frames = len(loaded_video_segments)
-    frames_with_overlap = 0
-    
-    for frame, masks in loaded_video_segments.items():
-        overlap = False
-        mask_combination = []
-        
-        required_masks = [masks.get(i) for i in range(2, 5)]
-        if all(mask is not None for mask in required_masks): 
-            for i in range(len(required_masks)):
-                for j in range(i+1, len(required_masks)):
-                    overlap_mask = np.logical_and(required_masks[i], required_masks[j])
-                    overlap_count = np.sum(overlap_mask)
-                    if overlap_count > 0:
-                        overlap = True
-                        frames_with_overlap += 1
-                        mask_combination.append((i+2, j+2, overlap_count))
-        
-        if overlap:
-            results[frame] = {
-                'overlap': overlap,
-                'mask_combination': mask_combination
-            }
-
-    print("\nOverlap Analysis Results:")
-    print(f"Total frames analyzed: {total_frames}")
-    
-    if results:
-        print(f"Found overlaps in {frames_with_overlap} frames:")
-        for frame, result in results.items():
-            for combination in result['mask_combination']:
-                print(f"Frame {frame}:  Masks {combination[0]} and {combination[1]} overlap: {combination[2]} pixels")
-    else:
-        print("No overlaps found between any masks in any frames!")
-
-    return results
-
-def remove_overlap(mask1, mask2):
-    overlap = np.logical_and(mask1, mask2)
-    return mask1 & ~overlap, mask2 & ~overlap, np.sum(overlap)
-
-def remove_overlapping_pixels(loaded_video_segments, overlap_results):
-    modified_segments = {}
-    
-    for frame, masks in loaded_video_segments.items():
-        modified_masks = masks.copy()
-        
-        if frame in overlap_results:
-            for combination in overlap_results[frame]['mask_combination']:
-                mask1_id, mask2_id, _ = combination
-                mask1, mask2, _ = remove_overlap(masks[mask1_id], masks[mask2_id])
-                modified_masks[mask1_id] = mask1
-                modified_masks[mask2_id] = mask2
-        
-        modified_segments[frame] = modified_masks
-    
-    return modified_segments
-
- """# overlap_results = check_mask_overlap(cleaned_distance_segments)
-
-# modified_segments = remove_overlapping_pixels(cleaned_distance_segments, overlap_results)
-# modified_overlap_results = check_mask_overlap(modified_segments)
-
-# Instead, the `cleaned_distance_segments` will now be the `modified_segments`
-
-# Check if any overlaps remain (should be none if logic is correct)
-# We can repurpose check_mask_overlap for verification or rely on the internal summary.
-# For now, let's remove the explicit check after the new distance_clean_segments.
-# modified_overlap_results = check_mask_overlap(modified_segments) 
 
 
 
@@ -1378,7 +1305,7 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
     print(f"Video saved to {output_path}")
 
 
-image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190220_05_crop"
+image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190314_02_crop"
 masks_dict = loaded_segments
 output_path = "filled_segments_video.mp4"
 

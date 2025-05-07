@@ -1460,7 +1460,7 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
     print(f"Video saved to {output_path}")
 
 
-video_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg/AG_WT-MMH99_10s_20190220_05"
+video_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg/AG_WT-MMH99_10s_20190314_02"
 image_dir = video_dir
 bottom_masks = head_segments
 top_masks = truncated_skeletons
