@@ -1378,7 +1378,7 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
     print(f"Video saved to {output_path}")
 
 
-image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190306_03_crop"
+image_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/AG_WT-MMH99_10s_20190220_05_crop"
 masks_dict = loaded_segments
 output_path = "filled_segments_video.mp4"
 

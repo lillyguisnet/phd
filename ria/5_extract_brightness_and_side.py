@@ -224,6 +224,8 @@ def process_cleaned_segments(cleaned_segments):
 df_wide_brightness_and_background = process_cleaned_segments(cleaned_segments)	
 
 
+
+
 ###Extract side
 def get_centroid(mask):
     # Get indices of True values - mask is already 2D

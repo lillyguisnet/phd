@@ -691,7 +691,7 @@ prompts = {}
 ann_frame_idx = frame_to_prompt  #frame index
 ann_obj_id = 2  #object id
 #points = np.array([[277, 307]], dtype=np.float32) #full frame
-points = np.array([[40, 50]], dtype=np.float32) #cropped frame nrd only
+points = np.array([[39, 32]], dtype=np.float32) #cropped frame nrd only
 labels = np.array([1], np.int32)
 prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -716,9 +716,9 @@ plt.close()
 #NRV
 ann_frame_idx = frame_to_prompt  # the frame index we interact with
 ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[67, 63],
-                   [61, 63],
-                   [70, 67]], dtype=np.float32) #cropped frame nrv only
+points = np.array([[64, 46], 
+                   [60, 50],
+                   [72, 70]], dtype=np.float32) #cropped frame nrv only
 # for labels, `1` means positive click and `0` means negative click
 labels = np.array([1, 0, 0], np.int32)
 prompts[ann_obj_id] = points, labels
@@ -746,9 +746,10 @@ plt.close()
 #LOOP
 ann_frame_idx = frame_to_prompt  # the frame index we interact with
 ann_obj_id = 4  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[73, 71]], dtype=np.float32) #cropped frame loop only
+points = np.array([[73, 71], 
+                   [72, 67]], dtype=np.float32) #cropped frame loop only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1], np.int32)
+labels = np.array([1, 1], np.int32)
 prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -920,7 +921,7 @@ new_prompts = {}
 new_prompt_frame = 613  #frame index
 #NRD
 ann_obj_id = 2  #object id
-points = np.array([[40., 50.]], dtype=np.float32) #cropped frame nrd only
+points = np.array([[39., 33.]], dtype=np.float32) #cropped frame nrd only
 labels = np.array([1], np.int32)
 new_prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -944,16 +945,12 @@ plt.close()
 
 #NRV
 ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[67., 63.],
-                   [61., 63.],
-                   [70., 67.], 
-                   [58, 68],
-                   [65, 67],
-                   [68, 67],
-                   [58, 58],
-                   [47, 52]], dtype=np.float32) #cropped frame nrv only
+points = np.array([[64., 49.],
+                   [60., 50.],
+                   [72., 70.],
+                   [58., 45.]], dtype=np.float32) #cropped frame nrv only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1, 0, 0, 0, 0, 0, 0, 0], np.int32)
+labels = np.array([1, 0, 0, 0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -978,9 +975,11 @@ plt.close()
 
 #LOOP
 ann_obj_id = 4  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[73., 71.]], dtype=np.float32) #cropped frame loop only
+points = np.array([[73., 71.],
+                   [72., 67.],
+                   [70., 65.]], dtype=np.float32) #cropped frame loop only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1], np.int32)
+labels = np.array([1, 1, 0], np.int32)
 new_prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(

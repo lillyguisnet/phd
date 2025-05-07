@@ -76,8 +76,8 @@ frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 inference_state = predictor.init_state(video_path=random_video_dir)
 
 
-points=np.array([[245, 350], [265, 360], [250, 450]], dtype=np.float32) #RIA region
-labels=np.array([1, 1, 0], np.int32)
+points=np.array([[210, 335], [240, 355], [210, 450], [230, 200]], dtype=np.float32) #RIA region
+labels=np.array([1, 1, 0, 0], np.int32)
 
 prompts = {}
 ann_frame_idx = len(frame_names) - 1 # Use the last frame
