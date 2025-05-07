@@ -163,13 +163,15 @@ if 'merged_fiji_df' in locals() and not merged_fiji_df.empty:
             # Ensure ventral_side is numeric if it's not already (e.g., if read as object)
             merged_fiji_df['ventral_side'] = pd.to_numeric(merged_fiji_df['ventral_side'], errors='coerce')
             
-            # Apply sign adjustment
-            # Where ventral_side is 1, multiply norm_angle by -1
-            # Where ventral_side is -1 (or other values), norm_angle remains unchanged by this specific step
-            # (assuming norm_angle is already correct for ventral_side == -1)
-            merged_fiji_df.loc[merged_fiji_df['ventral_side'] == 1, 'norm_angle'] *= -1
+            # Apply sign adjustment.
+            # The previous logic (flipping when ventral_side == 1) was found to be inverted,
+            # leading to anti-correlation where correlation was expected.
+            # New logic: Flip sign when ventral_side is -1.
+            # This assumes that ventral_side == 1 means the angle is already oriented correctly after normalization,
+            # and ventral_side == -1 means it needs to be flipped.
+            merged_fiji_df.loc[merged_fiji_df['ventral_side'] == -1, 'norm_angle'] *= -1
             
-            print("\nAdjusted 'norm_angle' sign based on 'ventral_side'.")
+            print("\nAdjusted 'norm_angle' sign based on 'ventral_side' (corrected logic).")
             print("First 5 rows with 'worm', 'angle', 'ventral_side', and adjusted 'norm_angle':")
             print(merged_fiji_df[['worm', 'angle', 'ventral_side', 'norm_angle']].head())
             
@@ -735,11 +737,14 @@ else:
         print(f"Plots will be saved to: {output_plot_dir}")
     except OSError as e:
         print(f"Error creating directory {output_plot_dir}: {e}. Skipping per-worm plotting.")
-        # Exit this block if directory creation fails
-        merged_df_fiji_sam = pd.DataFrame() # Effectively skip the rest of this block
+        merged_df_fiji_sam = pd.DataFrame() 
 
-    if not merged_df_fiji_sam.empty: # Proceed only if df is still valid (e.g. dir creation succeeded)
-        required_cols = ['worm', 'frame', 'nrd_norm', 'nrv_norm', 'loop_norm']
+    if not merged_df_fiji_sam.empty: 
+        required_cols = ['worm', 'frame', 
+                         'nrd_norm', 'nrv_norm', 'loop_norm', 
+                         'source', 'norm_angle', 'angle_degrees_corrected',
+                         '2_bg_corrected', '3_bg_corrected', '4_bg_corrected' # Added for new traces
+                        ]
         missing_cols = [col for col in required_cols if col not in merged_df_fiji_sam.columns]
 
         if missing_cols:
@@ -748,8 +753,25 @@ else:
             unique_worms = merged_df_fiji_sam['worm'].unique()
             print(f"Found {len(unique_worms)} unique worms to plot.")
 
+            # Define normalization function for per-worm series
+            def normalize_series_0_1(series_in):
+                series = pd.to_numeric(series_in.copy(), errors='coerce')
+                if series.isna().all() or series.empty:
+                    return pd.Series([np.nan] * len(series_in), index=series_in.index)
+                
+                min_val = series.min()
+                max_val = series.max()
+
+                if pd.isna(min_val) or pd.isna(max_val): # Should be covered by the first check
+                    return pd.Series([np.nan] * len(series_in), index=series_in.index)
+
+                if min_val == max_val:
+                    return series.apply(lambda x: 0.5 if pd.notna(x) else np.nan)
+                
+                normalized = (series - min_val) / (max_val - min_val)
+                return normalized
+
             for worm_id_obj in unique_worms:
-                # Handle potential non-string or NaN worm_ids from unique() if any survive cleaning
                 if pd.isna(worm_id_obj):
                     print("Encountered a NaN worm_id. Skipping this entry.")
                     continue
@@ -763,53 +785,147 @@ else:
                     continue
                 
                 if 'frame' not in worm_data.columns or worm_data['frame'].dropna().empty:
-                    print(f"Skipping worm {worm_id}: 'frame' column missing, empty, or all NaN.")
+                    print(f"Skipping worm {worm_id}: 'frame' column missing, empty, or all NaN for the worm.")
                     continue
 
-                # Sort data by frame for correct line plotting
                 worm_data_sorted = worm_data.sort_values(by='frame')
 
-                fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
+                fig, axes = plt.subplots(4, 1, figsize=(12, 12), sharex=True) # 4 subplots now
                 fig.suptitle(f"Worm: {worm_id}", fontsize=16)
 
+                any_data_plotted_for_worm = False
+                shade_regions = [(0, 100), (200, 300), (400, 500)]
+
+                # --- Head Bend Subplot (axes[0]) ---
+                ax_hb = axes[0]
+                ax_hb_twin = ax_hb.twinx()
+                
+                ax_hb.set_ylabel('Head Bend (Fiji, norm. angle)', color='blue')
+                ax_hb.set_ylim(-1, 1)
+                ax_hb.tick_params(axis='y', labelcolor='blue')
+
+                ax_hb_twin.set_ylabel('Head Bend (SAM, degrees)', color='green')
+                ax_hb_twin.set_ylim(-90, 90)
+                ax_hb_twin.tick_params(axis='y', labelcolor='green')
+
+                lines_hb, labels_hb = [], []
+                plotted_hb_fiji = False
+                plotted_hb_sam = False
+
+                # Plot Fiji norm_angle
+                fiji_hb_data = worm_data_sorted[worm_data_sorted['source'] == 'fiji']
+                if 'norm_angle' in fiji_hb_data.columns and not fiji_hb_data['norm_angle'].dropna().empty:
+                    valid_fiji_hb_data = fiji_hb_data.dropna(subset=['frame', 'norm_angle'])
+                    if not valid_fiji_hb_data.empty:
+                        line, = ax_hb.plot(valid_fiji_hb_data['frame'].to_numpy(), 
+                                           valid_fiji_hb_data['norm_angle'].to_numpy(),
+                                           marker='.', linestyle='-', markersize=4, color='blue', label='Fiji (norm. angle)')
+                        lines_hb.append(line)
+                        labels_hb.append('Fiji (norm. angle)')
+                        any_data_plotted_for_worm = True
+                        plotted_hb_fiji = True
+                
+                # Plot SAM angle_degrees_corrected
+                sam_hb_data = worm_data_sorted[worm_data_sorted['source'] == 'sam']
+                if 'angle_degrees_corrected' in sam_hb_data.columns and not sam_hb_data['angle_degrees_corrected'].dropna().empty:
+                    valid_sam_hb_data = sam_hb_data.dropna(subset=['frame', 'angle_degrees_corrected'])
+                    if not valid_sam_hb_data.empty:
+                        line, = ax_hb_twin.plot(valid_sam_hb_data['frame'].to_numpy(), 
+                                                valid_sam_hb_data['angle_degrees_corrected'].to_numpy(),
+                                                marker='.', linestyle='-', markersize=4, color='green', label='SAM (degrees)')
+                        lines_hb.append(line)
+                        labels_hb.append('SAM (degrees)')
+                        any_data_plotted_for_worm = True
+                        plotted_hb_sam = True
+
+                if plotted_hb_fiji or plotted_hb_sam:
+                    ax_hb.legend(lines_hb, labels_hb, loc='best')
+                else:
+                    ax_hb.text(0.5, 0.5, 'Head bend data\nnot available', 
+                               horizontalalignment='center', verticalalignment='center', 
+                               transform=ax_hb.transAxes)
+
+                for start, end in shade_regions:
+                    ax_hb.axvspan(start, end, color='lightblue', alpha=0.3, lw=0, zorder=0)
+
+
+                # --- Intensity Subplots (axes[1], axes[2], axes[3]) ---
                 plot_info = [
-                    ('nrd_norm', 'Normalized Dorsal Intensity (nrd_norm)'),
-                    ('nrv_norm', 'Normalized Ventral Intensity (nrv_norm)'),
-                    ('loop_norm', 'Normalized Loop Intensity (loop_norm)')
+                    ('nrd_norm', '2_bg_corrected', 'Normalized Dorsal Intensity'),
+                    ('nrv_norm', '3_bg_corrected', 'Normalized Ventral Intensity'),
+                    ('loop_norm', '4_bg_corrected', 'Normalized Loop Intensity')
                 ]
 
-                any_data_plotted_for_worm = False
-                for i, (col_name, y_label_text) in enumerate(plot_info):
-                    ax = axes[i]
-                    ax.set_ylabel(y_label_text)
-                    ax.set_ylim(0, 1)
-
-                    # Check if the column exists and has non-NaN data for this worm
-                    if col_name in worm_data_sorted.columns and not worm_data_sorted[col_name].dropna().empty:
-                        # Convert pandas Series to NumPy arrays for plotting
-                        x_data = worm_data_sorted['frame'].to_numpy()
-                        y_data = worm_data_sorted[col_name].to_numpy()
-                        ax.plot(x_data, y_data, 
-                                marker='.', linestyle='-', markersize=4, color='black')
-                        any_data_plotted_for_worm = True
-                    else:
-                        ax.text(0.5, 0.5, 'Data not available', 
-                                horizontalalignment='center', verticalalignment='center', 
-                                transform=ax.transAxes)
+                for i, (norm_col_name, sam_raw_col_name, y_label_text) in enumerate(plot_info):
+                    ax_intensity = axes[i+1] # Start from axes[1]
+                    ax_intensity.set_ylabel(y_label_text)
+                    ax_intensity.set_ylim(0, 1)
                     
-                    # Shading specific frame regions
-                    shade_regions = [(0, 10), (20, 30), (40, 50)]
+                    lines_intensity, labels_intensity = [], []
+                    plotted_anything_on_this_intensity_ax = False
+
+                    # Plot Fiji data for intensity (norm_col_name)
+                    fiji_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'fiji']
+                    if norm_col_name in fiji_intensity_data.columns and not fiji_intensity_data[norm_col_name].dropna().empty:
+                        valid_fiji_intensity = fiji_intensity_data.dropna(subset=['frame', norm_col_name])
+                        if not valid_fiji_intensity.empty:
+                            line, = ax_intensity.plot(valid_fiji_intensity['frame'].to_numpy(), 
+                                                      valid_fiji_intensity[norm_col_name].to_numpy(), 
+                                                      marker='.', linestyle='-', markersize=4, color='blue', label=f'Fiji ({norm_col_name})')
+                            lines_intensity.append(line)
+                            labels_intensity.append(f'Fiji ({norm_col_name})')
+                            any_data_plotted_for_worm = True
+                            plotted_anything_on_this_intensity_ax = True
+                    
+                    # Plot SAM data for intensity (norm_col_name)
+                    sam_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'sam']
+                    if norm_col_name in sam_intensity_data.columns and not sam_intensity_data[norm_col_name].dropna().empty:
+                        valid_sam_intensity = sam_intensity_data.dropna(subset=['frame', norm_col_name])
+                        if not valid_sam_intensity.empty:
+                            line, = ax_intensity.plot(valid_sam_intensity['frame'].to_numpy(), 
+                                                      valid_sam_intensity[norm_col_name].to_numpy(), 
+                                                      marker='.', linestyle='-', markersize=4, color='green', label=f'SAM ({norm_col_name})')
+                            lines_intensity.append(line)
+                            labels_intensity.append(f'SAM ({norm_col_name})')
+                            any_data_plotted_for_worm = True
+                            plotted_anything_on_this_intensity_ax = True
+                    
+                    # Plot SAM raw bg_corrected data, normalized per worm
+                    if sam_raw_col_name in sam_intensity_data.columns and not sam_intensity_data[sam_raw_col_name].dropna().empty:
+                        series_to_normalize = sam_intensity_data[sam_raw_col_name]
+                        normalized_sam_raw_trace = normalize_series_0_1(series_to_normalize)
+                        
+                        plot_df_trace = pd.DataFrame({
+                            'frame': sam_intensity_data['frame'], # Use frames from sam_intensity_data
+                            'trace_value': normalized_sam_raw_trace
+                        }).dropna(subset=['frame', 'trace_value'])
+
+                        if not plot_df_trace.empty:
+                            line, = ax_intensity.plot(plot_df_trace['frame'].to_numpy(), 
+                                                      plot_df_trace['trace_value'].to_numpy(), 
+                                                      marker='.', linestyle='-', markersize=4, color='purple', 
+                                                      label=f'SAM ({sam_raw_col_name} worm-norm)')
+                            lines_intensity.append(line)
+                            labels_intensity.append(f'SAM ({sam_raw_col_name} worm-norm)')
+                            any_data_plotted_for_worm = True
+                            plotted_anything_on_this_intensity_ax = True
+
+                    if plotted_anything_on_this_intensity_ax:
+                        ax_intensity.legend(lines_intensity, labels_intensity, loc='best', fontsize='small')
+                    else:
+                        ax_intensity.text(0.5, 0.5, f'Data for {norm_col_name} or {sam_raw_col_name}\nnot available', 
+                                          horizontalalignment='center', verticalalignment='center', 
+                                          transform=ax_intensity.transAxes)
+                    
                     for start, end in shade_regions:
-                        ax.axvspan(start, end, color='lightblue', alpha=0.3, lw=0, zorder=0)
+                        ax_intensity.axvspan(start, end, color='lightblue', alpha=0.3, lw=0, zorder=0)
 
                 if not any_data_plotted_for_worm:
                      print(f"No data available to plot for any metric for worm {worm_id}. Figure may be blank except for axes and shading.")
                 
-                axes[-1].set_xlabel('Frame')
-                plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust rect for suptitle
+                axes[-1].set_xlabel('Frame') # xlabel on the last subplot (axes[3])
+                plt.tight_layout(rect=[0, 0.03, 1, 0.95]) 
 
-                # Construct filename and save
-                # Worm IDs should be filename-safe after previous cleaning steps
                 filename = os.path.join(output_plot_dir, f"{worm_id}.png")
                 
                 try:
@@ -817,7 +933,7 @@ else:
                 except Exception as e:
                     print(f"Error saving plot for worm {worm_id}: {e}")
                 finally:
-                    plt.close(fig) # Close figure to free memory
+                    plt.close(fig) 
 
             print(f"\nFinished generating per-worm plots. Check the directory: {output_plot_dir}")
 
@@ -842,5 +958,131 @@ else:
 'bend_location', 'bend_magnitude', 'bend_position_y', 'bend_position_x', 'head_mag', 'body_mag',
 'is_noise_peak', 'peak_deviation', 'window_size_used', 'error', 'is_straight', 'has_warning']
  """
+
+def print_example_rows_line_by_line(df):
+    if 'merged_df_fiji_sam' not in globals() or df.empty:
+        print("merged_df_fiji_sam is not loaded or is empty. Cannot print examples.")
+        return
+
+    # No need for pd.set_option for this format
+
+    print("\n--- Example rows from FIJI source (line by line) ---")
+    fiji_examples = df[df['source'] == 'fiji'].head(3)
+    if not fiji_examples.empty:
+        for index, row in fiji_examples.iterrows():
+            print(f"\nFiji Row Index: {index}")
+            for col_name, value in row.items():
+                print(f"  {col_name}: {value}")
+    else:
+        print("No data found for source 'fiji'.")
+
+    print("\n--- Example rows from SAM source (line by line) ---")
+    sam_examples = df[df['source'] == 'sam'].head(3)
+    if not sam_examples.empty:
+        for index, row in sam_examples.iterrows():
+            print(f"\nSAM Row Index: {index}")
+            for col_name, value in row.items():
+                print(f"  {col_name}: {value}")
+    else:
+        print("No data found for source 'sam'.")
+
+# To use this, you would call it after your main script has run and populated merged_df_fiji_sam:
+# print_example_rows_line_by_line(merged_df_fiji_sam)
+
+# If you are running this snippet completely separately, uncomment the line below
+# and make sure 'merged_fiji_sam_normalized_data.csv' is in the correct path.
+# merged_df_fiji_sam = pd.read_csv('merged_fiji_sam_normalized_data.csv')
+# print_example_rows_line_by_line(merged_df_fiji_sam)
+
+def print_matching_fiji_sam_rows(df, num_examples=3):
+    if 'merged_df_fiji_sam' not in globals() or df.empty:
+        print("merged_df_fiji_sam is not loaded or is empty. Cannot print examples.")
+        return
+    
+    if 'worm' not in df.columns or 'frame' not in df.columns or 'source' not in df.columns:
+        print("Error: DataFrame must contain 'worm', 'frame', and 'source' columns.")
+        return
+
+    fiji_data = df[df['source'] == 'fiji']
+    sam_data = df[df['source'] == 'sam']
+
+    if fiji_data.empty or sam_data.empty:
+        print("Data for one or both sources (Fiji, SAM) is missing.")
+        return
+
+    common_worms = pd.Series(list(set(fiji_data['worm'].unique()) & set(sam_data['worm'].unique())))
+    common_worms = common_worms.dropna().unique() # Ensure no NaN worms and unique
+
+    if len(common_worms) == 0:
+        print("No common worm IDs found between Fiji and SAM sources after cleaning.")
+        return
+
+    print(f"Found {len(common_worms)} common worms. Will try to find matching frames for comparison.")
+    
+    examples_found = 0
+    for worm_id in common_worms:
+        if examples_found >= num_examples:
+            break
+
+        if pd.isna(worm_id): # Skip if worm_id itself is NaN
+            continue
+
+        fiji_worm_data = fiji_data[fiji_data['worm'] == worm_id]
+        sam_worm_data = sam_data[sam_data['worm'] == worm_id]
+
+        if fiji_worm_data.empty or sam_worm_data.empty:
+            continue
+
+        common_frames = pd.Series(list(set(fiji_worm_data['frame'].dropna().unique()) & set(sam_worm_data['frame'].dropna().unique())))
+        common_frames = common_frames.dropna().unique() # Ensure no NaN frames
+
+        if len(common_frames) == 0:
+            # print(f"No common frames for worm {worm_id}.") # Optional: uncomment for more verbose output
+            continue
+        
+        # Take up to 'num_examples - examples_found' frames for this worm
+        frames_to_show_for_this_worm = common_frames[:(num_examples - examples_found)]
+
+        for frame_val in frames_to_show_for_this_worm:
+            if examples_found >= num_examples:
+                break
+            
+            print(f"\n--- Comparing Worm: {worm_id}, Frame: {frame_val} ---")
+
+            fiji_row = fiji_worm_data[fiji_worm_data['frame'] == frame_val]
+            sam_row = sam_worm_data[sam_worm_data['frame'] == frame_val]
+
+            if not fiji_row.empty:
+                print("\n--- FIJI Data ---")
+                for index, data in fiji_row.iterrows():
+                    for col_name, value in data.items():
+                        print(f"  {col_name}: {value}")
+            else:
+                print(f"\n--- FIJI Data --- \n  No Fiji data for worm {worm_id}, frame {frame_val}")
+            
+            if not sam_row.empty:
+                print("\n--- SAM Data ---")
+                for index, data in sam_row.iterrows():
+                    for col_name, value in data.items():
+                        print(f"  {col_name}: {value}")
+            else:
+                print(f"\n--- SAM Data --- \n  No SAM data for worm {worm_id}, frame {frame_val}")
+            
+            print("-" * 40)
+            examples_found += 1
+            
+    if examples_found == 0:
+        print("\nCould not find any worms with common frames across both Fiji and SAM sources to display.")
+    elif examples_found < num_examples:
+        print(f"\nFound and displayed {examples_found} matching instance(s). Less than the requested {num_examples}.")
+
+
+# To use this, you would call it after your main script has run and populated merged_df_fiji_sam:
+# print_matching_fiji_sam_rows(merged_df_fiji_sam, num_examples=100) # Show 2 examples
+
+# If you are running this snippet completely separately, uncomment the line below
+# and make sure 'merged_fiji_sam_normalized_data.csv' is in the correct path.
+# merged_df_fiji_sam = pd.read_csv('merged_fiji_sam_normalized_data.csv')
+# print_matching_fiji_sam_rows(merged_df_fiji_sam, num_examples=2)
 
 
