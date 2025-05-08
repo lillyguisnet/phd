@@ -878,19 +878,24 @@ else:
                             plotted_anything_on_this_intensity_ax = True
                     
                     # Plot SAM data for intensity (norm_col_name)
-                    sam_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'sam']
-                    if norm_col_name in sam_intensity_data.columns and not sam_intensity_data[norm_col_name].dropna().empty:
-                        valid_sam_intensity = sam_intensity_data.dropna(subset=['frame', norm_col_name])
-                        if not valid_sam_intensity.empty:
-                            line, = ax_intensity.plot(valid_sam_intensity['frame'].to_numpy(), 
-                                                      valid_sam_intensity[norm_col_name].to_numpy(), 
-                                                      marker='.', linestyle='-', markersize=4, color='green', label=f'SAM ({norm_col_name})')
-                            lines_intensity.append(line)
-                            labels_intensity.append(f'SAM ({norm_col_name})')
-                            any_data_plotted_for_worm = True
-                            plotted_anything_on_this_intensity_ax = True
+                    # sam_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'sam']
+                    # if norm_col_name in sam_intensity_data.columns and not sam_intensity_data[norm_col_name].dropna().empty:
+                    #     valid_sam_intensity = sam_intensity_data.dropna(subset=['frame', norm_col_name])
+                    #     if not valid_sam_intensity.empty:
+                    #         line, = ax_intensity.plot(valid_sam_intensity['frame'].to_numpy(), 
+                    #                                   valid_sam_intensity[norm_col_name].to_numpy(), 
+                    #                                   marker='.', linestyle='-', markersize=4, color='green', label=f'SAM ({norm_col_name})')
+                    #         lines_intensity.append(line)
+                    #         labels_intensity.append(f'SAM ({norm_col_name})')
+                    #         any_data_plotted_for_worm = True
+                    #         plotted_anything_on_this_intensity_ax = True
                     
                     # Plot SAM raw bg_corrected data, normalized per worm
+                    # This part refers to sam_intensity_data, ensure it's defined if the above block is fully commented.
+                    # For now, we assume sam_intensity_data would be defined if any SAM data is to be plotted.
+                    # If you only want to remove the green line but keep the purple one, this structure is fine.
+                    # If all SAM plotting for these subplots were to be removed, sam_intensity_data definition might also be commented.
+                    sam_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'sam'] # This line is needed for the purple trace
                     if sam_raw_col_name in sam_intensity_data.columns and not sam_intensity_data[sam_raw_col_name].dropna().empty:
                         series_to_normalize = sam_intensity_data[sam_raw_col_name]
                         normalized_sam_raw_trace = normalize_series_0_1(series_to_normalize)
