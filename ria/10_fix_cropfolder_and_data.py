@@ -310,7 +310,7 @@ def save_brightness_and_side_data(df_wide_brightness_and_background, cleaned_seg
                 # Merge these columns into final_df, aligning on 'frame'
                 final_df = pd.merge(final_df, old_df[['frame'] + cols_to_carry_over], on='frame', how='left')
             else:
-                print("No unique columns to carry over, or old CSV columns are fully covered by new calculations.")
+                print("No unique columns to carry over from old CSV, or old CSV columns are fully covered by new calculations.")
             
     else:
         print(f"No existing CSV found at: {existing_csv_path}. Saving new calculations only.")
@@ -344,6 +344,6 @@ df_final_updated = save_brightness_and_side_data(
     df_wide_brightness_and_background, 
     cleaned_segments, 
     filename,  # This is the h5 filename
-    final_data_fixcrop_dir, 
-    final_data_fixcrop_dir
+    final_data_dir, # Corrected: This is where the original .csv to update is located
+    final_data_fixcrop_dir # This is where the new _fixfolder.csv will be saved
 )

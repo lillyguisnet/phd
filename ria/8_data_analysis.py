@@ -5,7 +5,7 @@ import seaborn as sns
 import numpy as np
 
 # Define the directories
-final_data_dir = "/home/lilly/phd/ria/data_analyzed/AG_WT/final_data"
+final_data_dir = "/home/lilly/phd/ria/data_analyzed/AG_WT/final_data_fixcropfolder"
 fiji_analysis_dir = "/home/lilly/phd/ria/data_analyzed/AG_WT/fiji_analysis"
 
 #region [1) check column names]
