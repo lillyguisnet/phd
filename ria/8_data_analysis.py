@@ -277,6 +277,16 @@ else:
 
     if all_sam_data:
         merged_sam_df = pd.concat(all_sam_data, ignore_index=True)
+        
+        # Adjust SAM frames: 0-612 -> 1-613
+        if 'frame' in merged_sam_df.columns:
+            merged_sam_df['frame'] = merged_sam_df['frame'] + 1
+            print("\nAdjusted 'frame' column in merged_sam_df by adding 1 (0-612 -> 1-613).")
+            # Optional: Verify the change
+            # print("Min and Max frame in SAM data after adjustment:", merged_sam_df['frame'].min(), merged_sam_df['frame'].max())
+        else:
+            print("\nWarning: 'frame' column not found in merged_sam_df. Cannot adjust frame numbers.")
+            
         print("\nSuccessfully merged SAM data.")
         print(f"Total rows in merged_sam_df: {len(merged_sam_df)}")
         print("First 5 rows of the merged SAM data:")
@@ -731,7 +741,7 @@ if 'merged_df_fiji_sam' not in locals() or merged_df_fiji_sam.empty:
 else:
     print("\nStarting per-worm plotting...")
     
-    output_plot_dir = "/home/lilly/phd/ria/plot_analysis/per_worm_intranorm_roll5"    #### <------------------
+    output_plot_dir = "/home/lilly/phd/ria/plot_analysis/per_worm"    #### <------------------
     try:
         os.makedirs(output_plot_dir, exist_ok=True)
         print(f"Plots will be saved to: {output_plot_dir}")
@@ -795,7 +805,7 @@ else:
 
                 any_data_plotted_for_worm = False
                 shade_regions = [(0, 100), (200, 300), (400, 500)]
-                rolling_window_size = 3
+                rolling_window_size = 1                     # <------------------------------------------
 
                 # --- Head Bend Subplot (axes[0]) ---
                 ax_hb = axes[0]
@@ -869,15 +879,18 @@ else:
 
 
                 # --- Intensity Subplots (axes[1], axes[2], axes[3]) ---
+                # plot_info structure: (fiji_data_column, sam_raw_data_column_for_worm_norm, sam_overall_norm_data_column, y_axis_label_text)
                 plot_info = [
-                    ('nrd_norm', '2_bg_corrected', 'Normalized Dorsal Intensity', 'blue'),
-                    ('nrv_norm', '3_bg_corrected', 'Normalized Ventral Intensity', 'blue'), 
-                    ('loop_norm', '4_bg_corrected', 'Normalized Loop Intensity', 'blue')
+                    ('nrd_norm', '2_bg_corrected', 'nrd_norm', 'Normalized Dorsal Intensity'),
+                    ('nrv_norm', '3_bg_corrected', 'nrv_norm', 'Normalized Ventral Intensity'), 
+                    ('loop_norm', '4_bg_corrected', 'loop_norm', 'Normalized Loop Intensity')
                 ]
-                sam_intensity_color = 'purple'
+                fiji_intensity_color = 'blue' # Color for Fiji traces
+                sam_worm_norm_intensity_color = 'purple' # Color for SAM worm-normalized raw traces
+                sam_overall_norm_intensity_color = 'red' # Color for SAM overall-normalized traces
 
 
-                for i_plot, (norm_col_name, sam_raw_col_name, y_label_text, fiji_color) in enumerate(plot_info):
+                for i_plot, (fiji_norm_col, sam_raw_col_name, sam_overall_norm_col_name, y_label_text) in enumerate(plot_info):
                     ax_intensity = axes[i_plot+1] # Start from axes[1]
                     ax_intensity.set_ylabel(y_label_text)
                     ax_intensity.set_ylim(0, 1)
@@ -885,24 +898,25 @@ else:
                     lines_intensity_subplot, labels_intensity_subplot = [], [] # For this specific subplot's legend
                     plotted_anything_on_this_intensity_ax = False
 
-                    # Plot Fiji data for intensity (norm_col_name)
+                    # Plot Fiji data for intensity (fiji_norm_col)
                     fiji_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'fiji']
-                    if norm_col_name in fiji_intensity_data.columns and not fiji_intensity_data[norm_col_name].dropna().empty:
-                        valid_fiji_intensity = fiji_intensity_data.dropna(subset=['frame', norm_col_name])
+                    if fiji_norm_col in fiji_intensity_data.columns and not fiji_intensity_data[fiji_norm_col].dropna().empty:
+                        valid_fiji_intensity = fiji_intensity_data.dropna(subset=['frame', fiji_norm_col])
                         if not valid_fiji_intensity.empty:
                             frames_np = valid_fiji_intensity['frame'].to_numpy()
-                            fiji_intensity_series = valid_fiji_intensity[norm_col_name]
+                            fiji_intensity_series = valid_fiji_intensity[fiji_norm_col]
                             
                             # Rolling average
                             fiji_intensity_avg = fiji_intensity_series.rolling(window=rolling_window_size, center=True, min_periods=1).mean().to_numpy()
                             line_avg, = ax_intensity.plot(frames_np, fiji_intensity_avg, 
-                                                          linestyle='-', linewidth=1.2, markersize=0, color=fiji_color, label=f'Fiji ({norm_col_name})')
+                                                          linestyle='-', linewidth=1.2, markersize=0, color=fiji_intensity_color, label=f'Fiji ({fiji_norm_col})')
                             lines_intensity_subplot.append(line_avg)
-                            labels_intensity_subplot.append(f'Fiji ({norm_col_name})')
+                            labels_intensity_subplot.append(f'Fiji ({fiji_norm_col})')
                             
                             any_data_plotted_for_worm = True
                             plotted_anything_on_this_intensity_ax = True
                     
+                    # Plot SAM raw data (worm-normalized) (sam_raw_col_name)
                     sam_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'sam'] 
                     if sam_raw_col_name in sam_intensity_data.columns and not sam_intensity_data[sam_raw_col_name].dropna().empty:
                         series_to_normalize = sam_intensity_data[sam_raw_col_name]
@@ -914,13 +928,13 @@ else:
                         }).dropna(subset=['frame', 'trace_value'])
 
                         if not plot_df_trace.empty:
-                            frames_np = plot_df_trace['frame'].to_numpy()
+                            frames_np_worm_norm = plot_df_trace['frame'].to_numpy() # Use specific frames
                             sam_trace_series = plot_df_trace['trace_value']
                             
                             # Rolling average
                             sam_trace_avg = sam_trace_series.rolling(window=rolling_window_size, center=True, min_periods=1).mean().to_numpy()
-                            line_avg, = ax_intensity.plot(frames_np, sam_trace_avg, 
-                                                          linestyle='-', linewidth=1.2, markersize=0, color=sam_intensity_color, 
+                            line_avg, = ax_intensity.plot(frames_np_worm_norm, sam_trace_avg, 
+                                                          linestyle='-', linewidth=1.2, markersize=0, color=sam_worm_norm_intensity_color, 
                                                           label=f'SAM ({sam_raw_col_name} worm-norm)')
                             lines_intensity_subplot.append(line_avg)
                             labels_intensity_subplot.append(f'SAM ({sam_raw_col_name} worm-norm)')
@@ -928,10 +942,29 @@ else:
                             any_data_plotted_for_worm = True
                             plotted_anything_on_this_intensity_ax = True
 
+                    # Plot SAM overall-normalized data (sam_overall_norm_col_name)
+                    # sam_intensity_data is already defined from above
+                    if sam_overall_norm_col_name in sam_intensity_data.columns and not sam_intensity_data[sam_overall_norm_col_name].dropna().empty:
+                        valid_sam_overall_norm_data = sam_intensity_data.dropna(subset=['frame', sam_overall_norm_col_name])
+                        if not valid_sam_overall_norm_data.empty:
+                            frames_np_overall = valid_sam_overall_norm_data['frame'].to_numpy()
+                            sam_overall_norm_series = valid_sam_overall_norm_data[sam_overall_norm_col_name]
+                            
+                            # Rolling average
+                            sam_overall_norm_avg = sam_overall_norm_series.rolling(window=rolling_window_size, center=True, min_periods=1).mean().to_numpy()
+                            line_avg_overall, = ax_intensity.plot(frames_np_overall, sam_overall_norm_avg, 
+                                                                  linestyle='-', linewidth=1.2, markersize=0, color=sam_overall_norm_intensity_color, 
+                                                                  label=f'SAM ({sam_overall_norm_col_name} overall-norm)')
+                            lines_intensity_subplot.append(line_avg_overall)
+                            labels_intensity_subplot.append(f'SAM ({sam_overall_norm_col_name} overall-norm)')
+                            
+                            any_data_plotted_for_worm = True
+                            plotted_anything_on_this_intensity_ax = True
+
                     if plotted_anything_on_this_intensity_ax:
                         ax_intensity.legend(lines_intensity_subplot, labels_intensity_subplot, loc='best', fontsize='small')
                     else:
-                        ax_intensity.text(0.5, 0.5, f'Data for {norm_col_name} or {sam_raw_col_name}\nnot available', 
+                        ax_intensity.text(0.5, 0.5, f'Data for {fiji_norm_col} or {sam_raw_col_name}\nnot available', 
                                           horizontalalignment='center', verticalalignment='center', 
                                           transform=ax_intensity.transAxes)
                     
