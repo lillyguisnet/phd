@@ -627,7 +627,7 @@ def process_video_dataset(fiji_video_id_input_dir: str, group_prefix: str):
 
 # --- User: Define the specific dataset to process here ---
 # Example:
-fiji_directory_for_video = "/home/lilly/phd/ria/benchmarks/brightest/data/fiji/MMH99_10s_20190305_03"
+fiji_directory_for_video = "/home/lilly/phd/ria/benchmarks/brightest/data/fiji/MMH99_10s_20190320_03"
 data_group_prefix = "AG_WT"
 
 # To process a different dataset, change the two variables above.
@@ -638,4 +638,6 @@ if not fiji_directory_for_video or not data_group_prefix:
     print("Error: Please set 'fiji_directory_for_video' and 'data_group_prefix' in the script.")
 else:
     process_video_dataset(fiji_directory_for_video, data_group_prefix)
+
+
 

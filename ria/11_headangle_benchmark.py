@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns # For improved aesthetics, optional
 
 
+
 #region [1) Copy random images]
 def copy_random_images(source_dir, dest_dir, num_images, csv_path):
     """
@@ -29,10 +30,10 @@ def copy_random_images(source_dir, dest_dir, num_images, csv_path):
     # Prepare CSV file
     csv_file_exists = os.path.isfile(csv_path)
     try:
-        with open(csv_path, 'a', newline='') as csvfile:
+        with open(csv_path, 'a', newline='') as csvfile: # Ensure 'a' for append mode
             csv_writer = csv.writer(csvfile)
             if not csv_file_exists:
-                csv_writer.writerow(["worm", "frame"]) # Write header
+                csv_writer.writerow(["worm", "frame"]) # Write header only if file is new
     except IOError as e:
         print(f"Error preparing CSV file {csv_path}: {e}")
         return # Stop if CSV cannot be opened
@@ -66,12 +67,12 @@ def copy_random_images(source_dir, dest_dir, num_images, csv_path):
             destination_file_path = os.path.join(dest_dir, new_dest_file_name)
 
             shutil.copy(file_path, destination_file_path)
-            copied_count += 1
-
+            
             # Append to CSV
-            with open(csv_path, 'a', newline='') as csvfile:
+            with open(csv_path, 'a', newline='') as csvfile: # Ensure 'a' for append mode
                 csv_writer = csv.writer(csvfile)
                 csv_writer.writerow([worm_name, frame_name_for_csv])
+            copied_count += 1
 
         except Exception as e:
             print(f"Error processing {file_path}: {e}")
@@ -87,6 +88,7 @@ csv_output_file = "/home/lilly/phd/ria/benchmarks/headangle/human_angle.csv"
 number_of_images_to_copy = 50
 copy_random_images(source_directory, destination_directory, number_of_images_to_copy, csv_output_file)
 #endregion
+
 
 
 #region [2) Fetch corresponding angles from fiji and sam]
