@@ -731,7 +731,7 @@ if 'merged_df_fiji_sam' not in locals() or merged_df_fiji_sam.empty:
 else:
     print("\nStarting per-worm plotting...")
     
-    output_plot_dir = "/home/lilly/phd/ria/plot_analysis/per_worm"
+    output_plot_dir = "/home/lilly/phd/ria/plot_analysis/per_worm_intranorm_roll5"    #### <------------------
     try:
         os.makedirs(output_plot_dir, exist_ok=True)
         print(f"Plots will be saved to: {output_plot_dir}")
@@ -795,6 +795,7 @@ else:
 
                 any_data_plotted_for_worm = False
                 shade_regions = [(0, 100), (200, 300), (400, 500)]
+                rolling_window_size = 3
 
                 # --- Head Bend Subplot (axes[0]) ---
                 ax_hb = axes[0]
@@ -808,7 +809,7 @@ else:
                 ax_hb_twin.set_ylim(-90, 90)
                 ax_hb_twin.tick_params(axis='y', labelcolor='green')
 
-                lines_hb, labels_hb = [], []
+                lines_hb, labels_hb = [], [] # These will be populated by get_legend_handles_labels
                 plotted_hb_fiji = False
                 plotted_hb_sam = False
 
@@ -817,11 +818,14 @@ else:
                 if 'norm_angle' in fiji_hb_data.columns and not fiji_hb_data['norm_angle'].dropna().empty:
                     valid_fiji_hb_data = fiji_hb_data.dropna(subset=['frame', 'norm_angle'])
                     if not valid_fiji_hb_data.empty:
-                        line, = ax_hb.plot(valid_fiji_hb_data['frame'].to_numpy(), 
-                                           valid_fiji_hb_data['norm_angle'].to_numpy(),
-                                           marker='.', linestyle='-', markersize=4, color='blue', label='Fiji (norm. angle)')
-                        lines_hb.append(line)
-                        labels_hb.append('Fiji (norm. angle)')
+                        frames_np = valid_fiji_hb_data['frame'].to_numpy()
+                        norm_angle_series = valid_fiji_hb_data['norm_angle']
+                        
+                        # Rolling average
+                        norm_angle_avg = norm_angle_series.rolling(window=rolling_window_size, center=True, min_periods=1).mean().to_numpy()
+                        ax_hb.plot(frames_np, norm_angle_avg,
+                                   linestyle='-', linewidth=1.2, markersize=0, color='blue', label='Fiji (norm. angle)')
+                        
                         any_data_plotted_for_worm = True
                         plotted_hb_fiji = True
                 
@@ -830,16 +834,31 @@ else:
                 if 'angle_degrees_corrected' in sam_hb_data.columns and not sam_hb_data['angle_degrees_corrected'].dropna().empty:
                     valid_sam_hb_data = sam_hb_data.dropna(subset=['frame', 'angle_degrees_corrected'])
                     if not valid_sam_hb_data.empty:
-                        line, = ax_hb_twin.plot(valid_sam_hb_data['frame'].to_numpy(), 
-                                                valid_sam_hb_data['angle_degrees_corrected'].to_numpy(),
-                                                marker='.', linestyle='-', markersize=4, color='green', label='SAM (degrees)')
-                        lines_hb.append(line)
-                        labels_hb.append('SAM (degrees)')
+                        frames_np = valid_sam_hb_data['frame'].to_numpy()
+                        angle_deg_corr_series = valid_sam_hb_data['angle_degrees_corrected']
+
+                        # Rolling average
+                        angle_deg_corr_avg = angle_deg_corr_series.rolling(window=rolling_window_size, center=True, min_periods=1).mean().to_numpy()
+                        ax_hb_twin.plot(frames_np, angle_deg_corr_avg,
+                                        linestyle='-', linewidth=1.2, markersize=0, color='green', label='SAM (degrees)')
+                        
                         any_data_plotted_for_worm = True
                         plotted_hb_sam = True
 
                 if plotted_hb_fiji or plotted_hb_sam:
-                    ax_hb.legend(lines_hb, labels_hb, loc='best')
+                    # Combine legends from both y-axes for ax_hb
+                    lns_combined = []
+                    labs_combined = []
+                    if ax_hb.has_data():
+                        l_ax, la_ax = ax_hb.get_legend_handles_labels()
+                        lns_combined.extend(l_ax)
+                        labs_combined.extend(la_ax)
+                    if ax_hb_twin.has_data():
+                        l_twin, la_twin = ax_hb_twin.get_legend_handles_labels()
+                        lns_combined.extend(l_twin)
+                        labs_combined.extend(la_twin)
+                    if lns_combined: # Check if there's anything to put in the legend
+                         ax_hb.legend(lns_combined, labs_combined, loc='best', fontsize='small')
                 else:
                     ax_hb.text(0.5, 0.5, 'Head bend data\nnot available', 
                                horizontalalignment='center', verticalalignment='center', 
@@ -851,17 +870,19 @@ else:
 
                 # --- Intensity Subplots (axes[1], axes[2], axes[3]) ---
                 plot_info = [
-                    ('nrd_norm', '2_bg_corrected', 'Normalized Dorsal Intensity'),
-                    ('nrv_norm', '3_bg_corrected', 'Normalized Ventral Intensity'),
-                    ('loop_norm', '4_bg_corrected', 'Normalized Loop Intensity')
+                    ('nrd_norm', '2_bg_corrected', 'Normalized Dorsal Intensity', 'blue'),
+                    ('nrv_norm', '3_bg_corrected', 'Normalized Ventral Intensity', 'blue'), 
+                    ('loop_norm', '4_bg_corrected', 'Normalized Loop Intensity', 'blue')
                 ]
+                sam_intensity_color = 'purple'
 
-                for i, (norm_col_name, sam_raw_col_name, y_label_text) in enumerate(plot_info):
-                    ax_intensity = axes[i+1] # Start from axes[1]
+
+                for i_plot, (norm_col_name, sam_raw_col_name, y_label_text, fiji_color) in enumerate(plot_info):
+                    ax_intensity = axes[i_plot+1] # Start from axes[1]
                     ax_intensity.set_ylabel(y_label_text)
                     ax_intensity.set_ylim(0, 1)
                     
-                    lines_intensity, labels_intensity = [], []
+                    lines_intensity_subplot, labels_intensity_subplot = [], [] # For this specific subplot's legend
                     plotted_anything_on_this_intensity_ax = False
 
                     # Plot Fiji data for intensity (norm_col_name)
@@ -869,54 +890,46 @@ else:
                     if norm_col_name in fiji_intensity_data.columns and not fiji_intensity_data[norm_col_name].dropna().empty:
                         valid_fiji_intensity = fiji_intensity_data.dropna(subset=['frame', norm_col_name])
                         if not valid_fiji_intensity.empty:
-                            line, = ax_intensity.plot(valid_fiji_intensity['frame'].to_numpy(), 
-                                                      valid_fiji_intensity[norm_col_name].to_numpy(), 
-                                                      marker='.', linestyle='-', markersize=4, color='blue', label=f'Fiji ({norm_col_name})')
-                            lines_intensity.append(line)
-                            labels_intensity.append(f'Fiji ({norm_col_name})')
+                            frames_np = valid_fiji_intensity['frame'].to_numpy()
+                            fiji_intensity_series = valid_fiji_intensity[norm_col_name]
+                            
+                            # Rolling average
+                            fiji_intensity_avg = fiji_intensity_series.rolling(window=rolling_window_size, center=True, min_periods=1).mean().to_numpy()
+                            line_avg, = ax_intensity.plot(frames_np, fiji_intensity_avg, 
+                                                          linestyle='-', linewidth=1.2, markersize=0, color=fiji_color, label=f'Fiji ({norm_col_name})')
+                            lines_intensity_subplot.append(line_avg)
+                            labels_intensity_subplot.append(f'Fiji ({norm_col_name})')
+                            
                             any_data_plotted_for_worm = True
                             plotted_anything_on_this_intensity_ax = True
                     
-                    # Plot SAM data for intensity (norm_col_name)
-                    # sam_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'sam']
-                    # if norm_col_name in sam_intensity_data.columns and not sam_intensity_data[norm_col_name].dropna().empty:
-                    #     valid_sam_intensity = sam_intensity_data.dropna(subset=['frame', norm_col_name])
-                    #     if not valid_sam_intensity.empty:
-                    #         line, = ax_intensity.plot(valid_sam_intensity['frame'].to_numpy(), 
-                    #                                   valid_sam_intensity[norm_col_name].to_numpy(), 
-                    #                                   marker='.', linestyle='-', markersize=4, color='green', label=f'SAM ({norm_col_name})')
-                    #         lines_intensity.append(line)
-                    #         labels_intensity.append(f'SAM ({norm_col_name})')
-                    #         any_data_plotted_for_worm = True
-                    #         plotted_anything_on_this_intensity_ax = True
-                    
-                    # Plot SAM raw bg_corrected data, normalized per worm
-                    # This part refers to sam_intensity_data, ensure it's defined if the above block is fully commented.
-                    # For now, we assume sam_intensity_data would be defined if any SAM data is to be plotted.
-                    # If you only want to remove the green line but keep the purple one, this structure is fine.
-                    # If all SAM plotting for these subplots were to be removed, sam_intensity_data definition might also be commented.
-                    sam_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'sam'] # This line is needed for the purple trace
+                    sam_intensity_data = worm_data_sorted[worm_data_sorted['source'] == 'sam'] 
                     if sam_raw_col_name in sam_intensity_data.columns and not sam_intensity_data[sam_raw_col_name].dropna().empty:
                         series_to_normalize = sam_intensity_data[sam_raw_col_name]
-                        normalized_sam_raw_trace = normalize_series_0_1(series_to_normalize)
+                        normalized_sam_raw_trace_series = normalize_series_0_1(series_to_normalize)
                         
                         plot_df_trace = pd.DataFrame({
-                            'frame': sam_intensity_data['frame'], # Use frames from sam_intensity_data
-                            'trace_value': normalized_sam_raw_trace
+                            'frame': sam_intensity_data['frame'], 
+                            'trace_value': normalized_sam_raw_trace_series
                         }).dropna(subset=['frame', 'trace_value'])
 
                         if not plot_df_trace.empty:
-                            line, = ax_intensity.plot(plot_df_trace['frame'].to_numpy(), 
-                                                      plot_df_trace['trace_value'].to_numpy(), 
-                                                      marker='.', linestyle='-', markersize=4, color='purple', 
-                                                      label=f'SAM ({sam_raw_col_name} worm-norm)')
-                            lines_intensity.append(line)
-                            labels_intensity.append(f'SAM ({sam_raw_col_name} worm-norm)')
+                            frames_np = plot_df_trace['frame'].to_numpy()
+                            sam_trace_series = plot_df_trace['trace_value']
+                            
+                            # Rolling average
+                            sam_trace_avg = sam_trace_series.rolling(window=rolling_window_size, center=True, min_periods=1).mean().to_numpy()
+                            line_avg, = ax_intensity.plot(frames_np, sam_trace_avg, 
+                                                          linestyle='-', linewidth=1.2, markersize=0, color=sam_intensity_color, 
+                                                          label=f'SAM ({sam_raw_col_name} worm-norm)')
+                            lines_intensity_subplot.append(line_avg)
+                            labels_intensity_subplot.append(f'SAM ({sam_raw_col_name} worm-norm)')
+                            
                             any_data_plotted_for_worm = True
                             plotted_anything_on_this_intensity_ax = True
 
                     if plotted_anything_on_this_intensity_ax:
-                        ax_intensity.legend(lines_intensity, labels_intensity, loc='best', fontsize='small')
+                        ax_intensity.legend(lines_intensity_subplot, labels_intensity_subplot, loc='best', fontsize='small')
                     else:
                         ax_intensity.text(0.5, 0.5, f'Data for {norm_col_name} or {sam_raw_col_name}\nnot available', 
                                           horizontalalignment='center', verticalalignment='center', 

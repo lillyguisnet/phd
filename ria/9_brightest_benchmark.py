@@ -16,8 +16,28 @@ from scipy import stats
 import glob
 
 
+# --- Configuration (can be adjusted by user) ---
+# Root directory of the project. All other paths are derived from this.
+PROJECT_ROOT_DIR = "/home/lilly/phd/ria" 
+
+# Base directories for different types of data, derived from PROJECT_ROOT_DIR
+# These point to the parent directories that would contain group-specific folders (like AG_WT)
+ANALYZED_DATA_PARENT_DIR = os.path.join(PROJECT_ROOT_DIR, "data_analyzed")
+RAW_FRAMES_PARENT_DIR = os.path.join(PROJECT_ROOT_DIR, "data_foranalysis")
+BENCHMARKS_ROOT_DIR = os.path.join(PROJECT_ROOT_DIR, "benchmarks/brightest")
+
+# Output directories for this benchmark script's results
+# These are specific to the "brightest" benchmark
+SAM_CSV_OUTPUT_DIR = os.path.join(BENCHMARKS_ROOT_DIR, "data/sam")
+PLOTS_OUTPUT_DIR = os.path.join(BENCHMARKS_ROOT_DIR, "sampleplots")
+
+# Ensure output directories exist at the start
+os.makedirs(SAM_CSV_OUTPUT_DIR, exist_ok=True)
+os.makedirs(PLOTS_OUTPUT_DIR, exist_ok=True)
+
+
 # Define the base directory for video frames
-VIDEO_FRAMES_BASE_DIR = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop"
+# VIDEO_FRAMES_BASE_DIR = "/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop" # Will be derived
 
 #region [SAM brightest]
 def load_cleaned_segments_from_h5(filename):
@@ -42,14 +62,14 @@ def load_cleaned_segments_from_h5(filename):
     return cleaned_segments
 
 # Define the specific file path
-filename = "/home/lilly/phd/ria/data_analyzed/AG_WT/cleaned_aligned_segments/AG_WT-MMH99_10s_20190320_03_crop_riasegmentation_cleanedalignedsegments.h5"
+# filename = "/home/lilly/phd/ria/data_analyzed/AG_WT/cleaned_aligned_segments/AG_WT-MMH99_10s_20190320_03_crop_riasegmentation_cleanedalignedsegments.h5" # Will be derived
 
 # Load the cleaned segments from the specified file
-cleaned_segments = load_cleaned_segments_from_h5(filename)
+# cleaned_segments = load_cleaned_segments_from_h5(filename) # Moved into main processing function
 
 # Determine the specific video's frames directory
-video_name_for_frames = os.path.basename(filename).split('_riasegmentation_')[0]
-current_video_frames_dir = os.path.join(VIDEO_FRAMES_BASE_DIR, video_name_for_frames)
+# video_name_for_frames = os.path.basename(filename).split('_riasegmentation_')[0] # Will be derived
+# current_video_frames_dir = os.path.join(VIDEO_FRAMES_BASE_DIR, video_name_for_frames) # Will be derived
 
 
 
@@ -189,7 +209,7 @@ def create_wide_format_table_with_bg_correction_and_pixel_count(stats_values_ove
         data[f"{obj}_pixel_count"] = []
     
     for frame_idx, frame_stats_dict in stats_values_over_frames.items():
-        data['frame'].append(frame_idx)
+        data['frame'].append(frame_idx + 1)
         bg_value = frame_stats_dict.get('background', np.nan)
         frame_pixel_counts = pixel_counts[frame_idx]
         for obj in all_objects:
@@ -270,15 +290,15 @@ def process_cleaned_segments(cleaned_segments, video_frames_dir: str):
 
     return df_wide_bg_corrected
 
-df_wide_brightness_and_background = process_cleaned_segments(cleaned_segments, current_video_frames_dir)
+# df_wide_brightness_and_background = process_cleaned_segments(cleaned_segments, current_video_frames_dir) # Moved
 
 # Save the DataFrame to the specified directory
-output_dir = "/home/lilly/phd/ria/benchmarks/brightest/data/sam"
+# output_dir = "/home/lilly/phd/ria/benchmarks/brightest/data/sam" # Will use SAM_CSV_OUTPUT_DIR
 
 # Extract video name from filename
-video_name = os.path.basename(filename).split('.')[0]
-output_path = os.path.join(output_dir, f"{video_name}_brightest_sam.csv")
-df_wide_brightness_and_background.to_csv(output_path, index=False)
+# video_name = os.path.basename(filename).split('.')[0] # Will be derived as output_filename_stem
+# output_path = os.path.join(output_dir, f"{video_name}_brightest_sam.csv") # Will be constructed
+# df_wide_brightness_and_background.to_csv(output_path, index=False) # Moved
 
 #endregion
 
@@ -344,12 +364,12 @@ def merge_fiji_xlsx_to_wide(fiji_xlsx_directory: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 # Example placeholder - replace with your actual path
-FIJI_DATA_DIRECTORY = "/home/lilly/phd/ria/benchmarks/brightest/data/fiji" 
-merged_fiji_df = merge_fiji_xlsx_to_wide(FIJI_DATA_DIRECTORY)
+# FIJI_DATA_DIRECTORY = "/home/lilly/phd/ria/benchmarks/brightest/data/fiji" # Will be an argument
+# merged_fiji_df = merge_fiji_xlsx_to_wide(FIJI_DATA_DIRECTORY) # Moved
 
-if not merged_fiji_df.empty:
-    print("\nHead of merged Fiji DataFrame:")
-    print(merged_fiji_df.head())
+# if not merged_fiji_df.empty:
+#     print("\nHead of merged Fiji DataFrame:")
+#     print(merged_fiji_df.head())
     # You might want to save it or process it further
     # merged_fiji_df.to_csv("merged_fiji_data_wide.csv", index=False)
 
@@ -357,54 +377,56 @@ if not merged_fiji_df.empty:
 def merge_sam_and_fiji_dfs(df_sam: pd.DataFrame, df_fiji: pd.DataFrame) -> pd.DataFrame:
     """
     Merges the SAM DataFrame and the Fiji DataFrame on the 'frame' column.
-
-    Args:
-        df_sam (pd.DataFrame): DataFrame containing SAM data with a 'frame' column.
-        df_fiji (pd.DataFrame): DataFrame containing Fiji data with a 'frame' column.
-
-    Returns:
-        pd.DataFrame: A merged DataFrame, or an empty DataFrame if an error occurs
-                      or one of the input DataFrames is empty.
+    It's expected that df_fiji is not empty when this function is called by process_video_dataset.
+    If df_sam is empty, a warning is printed, and the merge proceeds (resulting in df_fiji).
     """
-    if df_sam.empty or df_fiji.empty:
-        print("One or both DataFrames are empty. Cannot merge.")
-        if df_sam.empty and not df_fiji.empty:
-            return df_fiji # Or handle as an error/return empty
-        elif not df_sam.empty and df_fiji.empty:
-            return df_sam # Or handle as an error/return empty
+    # This is a safeguard; process_video_dataset should ensure df_fiji is not empty.
+    if df_fiji.empty:
+        print("CRITICAL ERROR in merge_sam_and_fiji_dfs: Fiji DataFrame is unexpectedly empty. This should have been caught by the caller. Aborting merge.")
+        return pd.DataFrame()
+
+    # sam_was_empty = False # This logic is now less relevant here, as caller ensures df_sam is not empty.
+    # if df_sam.empty:
+    #     print("Warning: SAM DataFrame is empty. The 'combined' DataFrame will effectively be the Fiji data after merge.")
+    #     sam_was_empty = True
+    #     # pd.merge with how='outer' handles one df being empty correctly if 'on' key is present in non-empty one.
+    # This check is now a safeguard for an unexpected state, as process_video_dataset should ensure df_sam is not empty.
+    if df_sam.empty:
+        print("CRITICAL ERROR in merge_sam_and_fiji_dfs: SAM DataFrame is unexpectedly empty. This should have been caught by the caller. Aborting merge.")
         return pd.DataFrame()
 
     try:
-        # Ensure 'frame' column is of the same type if necessary, though merge usually handles it.
-        # df_sam['frame'] = df_sam['frame'].astype(int)
-        # df_fiji['frame'] = df_fiji['frame'].astype(int)
-        
-        merged_df = pd.merge(df_sam, df_fiji, on='frame', how='outer')
-        # 'outer' merge to keep all frames from both, filling with NaN if a frame is in one but not the other.
-        # Use 'inner' if you only want frames present in both.
-        # Use 'left' to keep all frames from df_sam and matching from df_fiji.
+        # Using suffixes for robustness in case of any unexpected column name overlaps,
+        # though current naming conventions for SAM (e.g., '2_mean') and Fiji (e.g., 'fiji_nrd_Mean')
+        # should prevent clashes on data columns. The 'frame' column is the merge key.
+        merged_df = pd.merge(df_sam, df_fiji, on='frame', how='outer', suffixes=('_sam_data', '_fiji_data'))
         
         print("Successfully merged SAM and Fiji DataFrames.")
+        # if sam_was_empty: # No longer needed here.
+        #     print("Note: SAM data was empty; the merged DataFrame primarily reflects Fiji data.")
         return merged_df
     except KeyError:
-        print("Error: 'frame' column not found in one or both DataFrames.")
+        # This implies 'frame' column was missing, which is critical.
+        # merge_fiji_xlsx_to_wide should add 'frame' to fiji_df.
+        # process_cleaned_segments should ensure 'frame' in sam_df (if not empty).
+        print("CRITICAL Error: 'frame' column not found in one or both DataFrames during merge. Cannot combine.")
         return pd.DataFrame()
     except Exception as e:
-        print(f"An error occurred during merging: {e}")
+        print(f"CRITICAL Error: An unexpected error occurred during SAM and Fiji DataFrame merging: {e}")
         return pd.DataFrame()
 
 # Merge SAM and Fiji data
-combined_df = merge_sam_and_fiji_dfs(df_wide_brightness_and_background, merged_fiji_df)
+# combined_df = merge_sam_and_fiji_dfs(df_wide_brightness_and_background, merged_fiji_df) # Moved
 
-if not combined_df.empty:
-    print("\nHead of combined SAM and Fiji DataFrame:")
-    print(combined_df.head())
-    print("\nInfo of combined SAM and Fiji DataFrame:")
-    combined_df.info()
+# if not combined_df.empty:
+#     print("\nHead of combined SAM and Fiji DataFrame:")
+#     print(combined_df.head())
+#     print("\nInfo of combined SAM and Fiji DataFrame:")
+#     combined_df.info()
     
     # Example: Save the fully combined DataFrame
-    combined_output_path = os.path.join(output_dir, f"{video_name}_sam_fiji_combined.csv")
-    combined_df.to_csv(combined_output_path, index=False)
+    # combined_output_path = os.path.join(output_dir, f"{video_name}_sam_fiji_combined.csv") # Moved
+    # combined_df.to_csv(combined_output_path, index=False) # Moved
     # print(f"Combined data saved to {combined_output_path}")
 
 #endregion
@@ -420,9 +442,20 @@ def normalize_column(series: pd.Series) -> pd.Series:
         return pd.Series(np.zeros_like(series.values), index=series.index) # Or handle as all 0.5, or raise error
     return (series - min_val) / (max_val - min_val)
 
-# Ensure combined_df is available and not empty
-if not combined_df.empty:
+def generate_comparison_plot(combined_df: pd.DataFrame, plot_output_file_path: str, video_id: str):
+    """
+    Generates and saves a comparison plot from the combined DataFrame.
+    Args:
+        combined_df (pd.DataFrame): DataFrame containing merged SAM and Fiji data.
+        plot_output_file_path (str): Full path to save the generated plot.
+        video_id (str): The ID of the video being analyzed, used for the plot title.
+    """
+    if combined_df.empty:
+        print("Combined DataFrame is empty. Cannot generate plot.")
+        return
+
     fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    fig.suptitle(f"Comparison Plot for Video: {video_id}", fontsize=16)
 
     # Data for subplots
     plot_data = [
@@ -442,7 +475,7 @@ if not combined_df.empty:
             norm_fiji = normalize_column(combined_df[fiji_col_name])
 
             ax.plot(combined_df['frame'].values, norm_sam.values, label=f'SAM: Normalized {sam_col_name}')
-            ax.plot(combined_df['frame'].values, norm_fiji.values, label=f'Fiji: Normalized {fiji_col_name}', linestyle='--')
+            ax.plot(combined_df['frame'].values, norm_fiji.values, label=f'Fiji: Normalized {fiji_col_name}')
             
             ax.set_ylabel("Normalized Max Intensity")
             ax.set_title(data["title"])
@@ -454,26 +487,155 @@ if not combined_df.empty:
                 missing_cols.append(sam_col_name)
             if fiji_col_name not in combined_df.columns:
                 missing_cols.append(fiji_col_name)
-            ax.text(0.5, 0.5, f"Data for columns: {', '.join(missing_cols)} not found", 
+            
+            log_message = f"Data for columns: {', '.join(missing_cols)} not found for plot: {data['title']}"
+            if combined_df.empty or not any(col in combined_df.columns for col in [sam_col_name, fiji_col_name]):
+                 ax.text(0.5, 0.5, log_message, 
                     horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+            else: # Plot available data if one of the pair is missing but others exist
+                if sam_col_name in combined_df.columns:
+                    norm_sam = normalize_column(combined_df[sam_col_name])
+                    ax.plot(combined_df['frame'].values, norm_sam.values, label=f'SAM: Normalized {sam_col_name}')
+                if fiji_col_name in combined_df.columns: # Should not happen if the first if failed for fiji_col_name
+                    norm_fiji = normalize_column(combined_df[fiji_col_name])
+                    ax.plot(combined_df['frame'].values, norm_fiji.values, label=f'Fiji: Normalized {fiji_col_name}', linestyle='--')
+                ax.legend()
+
             ax.set_title(data["title"])
-            print(f"Warning: Columns {', '.join(missing_cols)} not found for subplot {i+1}")
+            print(f"Warning: {log_message}")
 
 
     axes[-1].set_xlabel("Frame")
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust layout to make space for suptitle
     
-    # Save the plot
-    plot_output_dir = "/home/lilly/phd/ria/benchmarks/brightest/sampleplots"
-    plot_output_path = os.path.join(plot_output_dir, f"{video_name}_sam_fiji_comparison_plot.png")
-    plt.savefig(plot_output_path)
-    print(f"Comparison plot saved to {plot_output_path}")
+    plt.savefig(plot_output_file_path)
+    print(f"Comparison plot saved to {plot_output_file_path}")
     
-    plt.show()
-    plt.close()
-
-else:
-    print("Combined DataFrame is empty. Cannot generate plot.")
+    # plt.show() # Optionally disable interactive showing if running in batch
+    plt.close(fig)
 
 #endregion
+
+
+
+# --- Main Processing Function ---
+def process_video_dataset(fiji_video_id_input_dir: str, group_prefix: str):
+    """
+    Processes a single video dataset: loads SAM data, Fiji data, merges them,
+    saves CSVs, and generates comparison plots.
+
+    Args:
+        fiji_video_id_input_dir (str): Path to the directory containing Fiji XLSX files 
+                                       for a specific video ID.
+                                       e.g., "/home/lilly/phd/ria/benchmarks/brightest/data/fiji/MMH99_10s_20190320_03"
+        group_prefix (str): The group prefix (e.g., "AG_WT") used in H5 file and 
+                            raw frame directory naming conventions.
+    """
+    video_id = os.path.basename(fiji_video_id_input_dir)
+    print(f"\n--- Processing dataset for Video ID: {video_id} (Group: {group_prefix}) ---")
+
+    # --- Construct paths based on video_id and group_prefix ---
+    h5_filename_stem = f"{group_prefix}-{video_id}_crop_riasegmentation_cleanedalignedsegments"
+    cleaned_segments_h5_file = os.path.join(
+        ANALYZED_DATA_PARENT_DIR, group_prefix, "cleaned_aligned_segments", f"{h5_filename_stem}.h5"
+    )
+
+    video_frames_subdir_name = f"{group_prefix}-{video_id}_crop"
+    current_video_frames_dir = os.path.join(
+        RAW_FRAMES_PARENT_DIR, group_prefix, "riacrop", video_frames_subdir_name
+    )
+
+    # --- Input validation ---
+    if not os.path.isfile(cleaned_segments_h5_file):
+        print(f"Error: Cleaned segments H5 file not found: {cleaned_segments_h5_file}")
+        return
+    if not os.path.isdir(current_video_frames_dir):
+        print(f"Error: Video frames directory not found: {current_video_frames_dir}")
+        return
+    if not os.path.isdir(fiji_video_id_input_dir):
+        print(f"Error: Fiji data directory not found: {fiji_video_id_input_dir}")
+        return
+
+    print(f"Using H5 file: {cleaned_segments_h5_file}")
+    print(f"Using video frames from: {current_video_frames_dir}")
+    print(f"Using Fiji data from: {fiji_video_id_input_dir}")
+
+    # --- Part 1: SAM brightest processing ---
+    print("\n[Phase 1: Processing SAM brightness data]")
+    cleaned_segments = load_cleaned_segments_from_h5(cleaned_segments_h5_file)
+    if not cleaned_segments:
+        print(f"CRITICAL ERROR: Failed to load cleaned segments from {cleaned_segments_h5_file} (H5 file might be corrupt or empty). Aborting processing for Video ID: {video_id}.")
+        return
+
+    df_wide_brightness_and_background = process_cleaned_segments(cleaned_segments, current_video_frames_dir)
+    if df_wide_brightness_and_background.empty:
+        print(f"CRITICAL ERROR: SAM brightness processing for Video ID '{video_id}' (from H5 file '{cleaned_segments_h5_file}') resulted in an empty DataFrame. This indicates no valid SAM data could be extracted or processed. Aborting processing for this video.")
+        return
+    
+    sam_csv_output_path = os.path.join(SAM_CSV_OUTPUT_DIR, f"{h5_filename_stem}_brightest_sam.csv")
+    df_wide_brightness_and_background.to_csv(sam_csv_output_path, index=False)
+    print(f"SAM brightness data saved to {sam_csv_output_path}")
+
+    # --- Part 2: Merge Fiji XLSX ---
+    print("\n[Phase 2: Processing Fiji data]")
+    merged_fiji_df = merge_fiji_xlsx_to_wide(fiji_video_id_input_dir)
+    if merged_fiji_df.empty:
+        print(f"CRITICAL ERROR: Fiji data processing from '{fiji_video_id_input_dir}' resulted in an empty DataFrame (no .xlsx files found or files were unreadable). Aborting processing for Video ID: {video_id}.")
+        return 
+    else:
+        print(f"Successfully processed Fiji data from {fiji_video_id_input_dir}.")
+
+    # --- Part 3: Merge SAM and Fiji DataFrames ---
+    print("\n[Phase 3: Merging SAM and Fiji data]")
+    # At this point, merged_fiji_df is guaranteed to be non-empty.
+    # df_wide_brightness_and_background (SAM data) might be empty, which is handled by merge_sam_and_fiji_dfs.
+    combined_df = merge_sam_and_fiji_dfs(df_wide_brightness_and_background, merged_fiji_df)
+
+    if not combined_df.empty:
+        # This means the merge was successful. 
+        # If SAM data was empty, merge_sam_and_fiji_dfs would have printed a warning, 
+        # and combined_df would effectively be merged_fiji_df.
+        print("Successfully created combined DataFrame.")
+        # Note about SAM data being empty is now printed within merge_sam_and_fiji_dfs
+        print("\nHead of combined DataFrame:")
+        print(combined_df.head(3))
+        
+        combined_csv_output_path = os.path.join(SAM_CSV_OUTPUT_DIR, f"{h5_filename_stem}_sam_fiji_combined.csv")
+        combined_df.to_csv(combined_csv_output_path, index=False)
+        print(f"Combined data saved to {combined_csv_output_path}")
+    else:
+        # This 'else' will be reached if merge_sam_and_fiji_dfs returned an empty DataFrame,
+        # indicating a critical failure within the merge operation itself (e.g., KeyError, other exception),
+        # as an empty merged_fiji_df (the main Fiji data source) is caught in Phase 2.
+        sam_status = "empty" if df_wide_brightness_and_background.empty else "present"
+        # merged_fiji_df is guaranteed not empty here, so no need to check its status for this message.
+        print(f"CRITICAL ERROR: Failed to create a combined DataFrame for Video ID: {video_id} (SAM data was {sam_status}). This usually indicates a problem during the merge operation itself (e.g., missing 'frame' column or other mismatch). Review messages from the merge function. Aborting further steps for this video.")
+        return 
+
+    # --- Part 4: Plot results ---
+    print("\n[Phase 4: Generating comparison plot]")
+    if not combined_df.empty:
+        plot_output_file_path = os.path.join(PLOTS_OUTPUT_DIR, f"{h5_filename_stem}_sam_fiji_comparison_plot.png")
+        generate_comparison_plot(combined_df, plot_output_file_path, video_id)
+    else:
+        print("Plotting skipped as combined data is empty.")
+    
+    print(f"--- Finished processing for Video ID: {video_id} ---")
+
+
+
+
+# --- User: Define the specific dataset to process here ---
+# Example:
+fiji_directory_for_video = "/home/lilly/phd/ria/benchmarks/brightest/data/fiji/MMH99_10s_20190305_03"
+data_group_prefix = "AG_WT"
+
+# To process a different dataset, change the two variables above.
+# For example, for a different video and group:
+# fiji_directory_for_video = "/path/to/your/benchmarks/brightest/data/fiji/ANOTHER_VIDEO_ID"
+# data_group_prefix = "ANOTHER_GROUP"
+if not fiji_directory_for_video or not data_group_prefix:
+    print("Error: Please set 'fiji_directory_for_video' and 'data_group_prefix' in the script.")
+else:
+    process_video_dataset(fiji_directory_for_video, data_group_prefix)
 
