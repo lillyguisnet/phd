@@ -43,7 +43,7 @@ def show_points(coords, labels, ax, marker_size=20):
 
 
 
-video_dir = '/home/lilly/phd/ria/data_foranalysis/videotojpg/AG-MMH99_10s_20190306_02'
+video_dir = '/home/lilly/phd/ria/tst_appleworm/data/tojpg/raw-Media1'
 
 
 # scan all the jpg frame names in this directory
@@ -62,8 +62,9 @@ prompts = {}
 ann_frame_idx = 0  #frame index
 ann_obj_id = 2  #object id
 #points = np.array([[277, 307]], dtype=np.float32) #full frame
-points = np.array([[250, 250]], dtype=np.float32) #cropped frame nrd only
-labels = np.array([1], np.int32)
+points = np.array([[260, 250], [240, 223],
+                   [210, 250], [220, 227]], dtype=np.float32) #cropped frame nrd only
+labels = np.array([1, 1, 0, 0], np.int32)
 prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
     inference_state=inference_state,
@@ -215,9 +216,9 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
 """
 image_dir = video_dir
 masks_dict = video_segments
-output_path = "ff_head_segments_video.mp4"
+output_path = "appleworm.mp4"
 
-create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=1)
+create_mask_video(image_dir, masks_dict, output_path, fps=5, alpha=1)
 """
 
 

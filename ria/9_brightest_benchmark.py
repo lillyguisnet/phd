@@ -30,10 +30,12 @@ BENCHMARKS_ROOT_DIR = os.path.join(PROJECT_ROOT_DIR, "benchmarks/brightest")
 # These are specific to the "brightest" benchmark
 SAM_CSV_OUTPUT_DIR = os.path.join(BENCHMARKS_ROOT_DIR, "data/sam")
 PLOTS_OUTPUT_DIR = os.path.join(BENCHMARKS_ROOT_DIR, "sampleplots")
+ANALYSIS_DATA_OUTPUT_DIR = os.path.join(BENCHMARKS_ROOT_DIR, "analysis_data") # New directory for analysis results
 
 # Ensure output directories exist at the start
 os.makedirs(SAM_CSV_OUTPUT_DIR, exist_ok=True)
 os.makedirs(PLOTS_OUTPUT_DIR, exist_ok=True)
+os.makedirs(ANALYSIS_DATA_OUTPUT_DIR, exist_ok=True) # Create the new directory
 
 
 # Define the base directory for video frames
@@ -642,13 +644,259 @@ else:
 
 
 
-#region [Compute agreement between Fiji and SAM per compartment per worm]
 
 
+#region [Compute Disagreement between Fiji and SAM]
+
+def extract_video_id_from_combined_filename(filename: str) -> str:
+    """
+    Extracts the video_id from the combined CSV filename.
+    Example filename: AG_WT-MMH99_10s_20190320_03_crop_riasegmentation_cleanedalignedsegments_sam_fiji_combined.csv
+    Expected video_id: MMH99_10s_20190320_03
+    """
+    base_name = os.path.basename(filename)
+    suffix_to_remove = "_crop_riasegmentation_cleanedalignedsegments_sam_fiji_combined.csv"
+    
+    if base_name.endswith(suffix_to_remove):
+        stem_with_group = base_name[:-len(suffix_to_remove)] # e.g., "AG_WT-MMH99_10s_20190320_03"
+        parts = stem_with_group.split('-', 1)
+        if len(parts) == 2:
+            return parts[1]  # This is the video_id part
+        else:
+            print(f"Warning: Could not split group prefix from video_id in '{stem_with_group}' for file '{filename}'. Using full stem as video_id.")
+            return stem_with_group 
+    else:
+        print(f"Warning: Filename '{base_name}' does not match expected format for video_id extraction. Attempting fallback.")
+        # Fallback: try to remove generic _sam_fiji_combined.csv and then parse
+        generic_suffix = "_sam_fiji_combined.csv"
+        if base_name.endswith(generic_suffix):
+            stem_guess = base_name[:-len(generic_suffix)]
+            parts = stem_guess.split('-',1)
+            if len(parts) > 1 and "_crop_riasegmentation_cleanedalignedsegments" in parts[1]: # Heuristic check
+                 # This might be group-videoname_crop...
+                 sub_parts = parts[1].split("_crop_riasegmentation_cleanedalignedsegments")[0]
+                 return sub_parts
+
+        print(f"Warning: Using a very basic fallback for video_id from '{base_name}'. This might be incorrect.")
+        return base_name.split('_')[0] 
+
+def calculate_disagreement_for_file(combined_csv_path: str) -> pd.DataFrame:
+    """
+    Calculates the percent disagreement between normalized SAM and Fiji values
+    for NRD, NRV, and Loop compartments from a combined CSV file.
+    """
+    video_id = extract_video_id_from_combined_filename(combined_csv_path)
+    try:
+        combined_df = pd.read_csv(combined_csv_path)
+    except FileNotFoundError:
+        print(f"Error: File not found {combined_csv_path}")
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"Error reading {combined_csv_path}: {e}")
+        return pd.DataFrame()
+
+    if 'frame' not in combined_df.columns:
+        print(f"Error: 'frame' column missing in {combined_csv_path}")
+        return pd.DataFrame()
+
+    compartment_mappings = {
+        'nrd': {'sam': '2_max', 'fiji': 'fiji_nrd_max'},
+        'nrv': {'sam': '3_max', 'fiji': 'fiji_nrv_max'},
+        'loop': {'sam': '4_max', 'fiji': 'fiji_loop_max'}
+    }
+
+    all_disagreements_for_file = []
+
+    for comp_name, cols in compartment_mappings.items():
+        sam_col_name = cols['sam']
+        fiji_col_name = cols['fiji']
+
+        if sam_col_name in combined_df.columns and fiji_col_name in combined_df.columns:
+            sam_series = pd.to_numeric(combined_df[sam_col_name], errors='coerce')
+            fiji_series = pd.to_numeric(combined_df[fiji_col_name], errors='coerce')
+            
+            valid_indices = sam_series.notna() & fiji_series.notna()
+            if not valid_indices.any():
+                # print(f"Info: No overlapping valid data for compartment '{comp_name}' (SAM: {sam_col_name}, Fiji: {fiji_col_name}) in {video_id} after handling NaNs.")
+                continue
+
+            norm_sam = normalize_column(sam_series[valid_indices])
+            norm_fiji = normalize_column(fiji_series[valid_indices])
+
+            abs_diff_series = (norm_sam - norm_fiji).abs() * 100  # Percent disagreement
+
+            comp_df_data = {
+                'frame': combined_df.loc[valid_indices, 'frame'].values,
+                'video_id': video_id,
+                'compartment': comp_name,
+                'disagreement_percentage': abs_diff_series.values
+            }
+            comp_df = pd.DataFrame(comp_df_data)
+            all_disagreements_for_file.append(comp_df)
+        else:
+            missing = []
+            if sam_col_name not in combined_df.columns: missing.append(sam_col_name)
+            if fiji_col_name not in combined_df.columns: missing.append(fiji_col_name)
+            # print(f"Info: Missing column(s) {', '.join(missing)} for compartment '{comp_name}' in {combined_csv_path}. Skipping.")
+            pass # Reduced verbosity for missing columns, as it might be common for some datasets
+
+    if not all_disagreements_for_file:
+        return pd.DataFrame()
+    
+    return pd.concat(all_disagreements_for_file, ignore_index=True)
 
 
+def analyze_all_disagreements():
+    """
+    Finds all combined SAM-Fiji CSVs, calculates disagreement for each,
+    saves a consolidated DataFrame, and then calculates summary statistics.
+    """
+    print("\n\n--- Starting Disagreement Analysis ---")
+    # Pattern ensures we get files like "AG_WT-VIDEOID_crop_...._sam_fiji_combined.csv"
+    glob_pattern = os.path.join(SAM_CSV_OUTPUT_DIR, "*_sam_fiji_combined.csv")
+    combined_csv_files = glob.glob(glob_pattern)
+
+    if not combined_csv_files:
+        print(f"No '*_sam_fiji_combined.csv' files found in {SAM_CSV_OUTPUT_DIR} matching pattern '{glob_pattern}'. Skipping disagreement analysis.")
+        return
+
+    print(f"Found {len(combined_csv_files)} combined CSV files for disagreement analysis.")
+    
+    master_disagreement_list = []
+    for csv_file in tqdm(combined_csv_files, desc="Analyzing disagreements"):
+        disagreement_df = calculate_disagreement_for_file(csv_file)
+        if not disagreement_df.empty:
+            master_disagreement_list.append(disagreement_df)
+
+    if not master_disagreement_list:
+        print("No disagreement data generated from any file.")
+        print("--- Finished Disagreement Analysis ---")
+        return
+
+    final_disagreement_df = pd.concat(master_disagreement_list, ignore_index=True)
+
+    output_filename = "all_videos_disagreement_analysis.csv"
+    output_path = os.path.join(ANALYSIS_DATA_OUTPUT_DIR, output_filename)
+    
+    final_disagreement_df.to_csv(output_path, index=False)
+    print(f"\nConsolidated disagreement analysis saved to: {output_path}")
+    print("\nHead of the final disagreement DataFrame:")
+    print(final_disagreement_df.head())
+    print("\nInfo of the final disagreement DataFrame:")
+    final_disagreement_df.info()
+
+    # --- Calculate and save summary statistics ---
+
+    # 1. Summary statistics per worm (video_id) per compartment
+    summary_per_worm_compartment = final_disagreement_df.groupby(['video_id', 'compartment'])['disagreement_percentage'].agg(
+        ['min', 'max', 'mean', 'median', 'std']
+    ).reset_index()
+
+    summary_per_worm_output_filename = "summary_disagreement_per_worm_compartment.csv"
+    summary_per_worm_output_path = os.path.join(ANALYSIS_DATA_OUTPUT_DIR, summary_per_worm_output_filename)
+    summary_per_worm_compartment.to_csv(summary_per_worm_output_path, index=False)
+    
+    print(f"\nSummary disagreement per worm and compartment saved to: {summary_per_worm_output_path}")
+    print("\nHead of summary per worm and compartment:")
+    print(summary_per_worm_compartment.head())
+
+    # 2. Summary statistics per compartment (all worms together)
+    summary_per_compartment_all_worms = final_disagreement_df.groupby('compartment')['disagreement_percentage'].agg(
+        ['min', 'max', 'mean', 'median', 'std']
+    ).reset_index()
+
+    summary_all_worms_output_filename = "summary_disagreement_per_compartment_overall.csv"
+    summary_all_worms_output_path = os.path.join(ANALYSIS_DATA_OUTPUT_DIR, summary_all_worms_output_filename)
+    summary_per_compartment_all_worms.to_csv(summary_all_worms_output_path, index=False)
+
+    print(f"\nSummary disagreement per compartment (overall) saved to: {summary_all_worms_output_path}")
+    print("\nSummary per compartment (overall):")
+    print(summary_per_compartment_all_worms)
+    
+    # --- Plotting the disagreement histogram ---
+    if not final_disagreement_df.empty:
+        histogram_output_filename = "disagreement_histogram_by_compartment.png"
+        histogram_output_path = os.path.join(ANALYSIS_DATA_OUTPUT_DIR, histogram_output_filename)
+        plot_disagreement_histogram(final_disagreement_df, histogram_output_path)
+    else:
+        print("Skipping histogram plotting as final_disagreement_df is empty.")
+
+    print("--- Finished Disagreement Analysis ---")
 
 
+def plot_disagreement_histogram(disagreement_df: pd.DataFrame, output_path: str):
+    """
+    Generates and saves histograms of disagreement percentages for each compartment
+    on separate subplots using matplotlib, in a specific order (NRD, NRV, Loop).
+    Adds a vertical line at the maximum disagreement value for each subplot.
+    """
+    if disagreement_df.empty or 'disagreement_percentage' not in disagreement_df.columns or 'compartment' not in disagreement_df.columns:
+        print("Warning: Disagreement DataFrame is empty or missing required columns for histogram. Skipping plot.")
+        return
+
+    # Define the desired order of compartments
+    desired_order = ['nrd', 'nrv', 'loop']
+    
+    # Filter to include only compartments present in the data, maintaining the desired order
+    present_compartments = [comp for comp in desired_order if comp in disagreement_df['compartment'].unique()]
+    
+    if not present_compartments:
+        print("Warning: None of the specified compartments (NRD, NRV, Loop) found in the data. Skipping histogram plot.")
+        return
+
+    num_compartments = len(present_compartments)
+    
+    # Create a figure with 'num_compartments' subplots, arranged vertically
+    fig, axes = plt.subplots(num_compartments, 1, figsize=(10, 5 * num_compartments), sharex=True, squeeze=False)
+    # squeeze=False ensures axes is always a 2D array, even if num_compartments is 1. Access with axes[i, 0]
+    
+    axes = axes.flatten() # Flatten to 1D array for easier iteration
+
+    for i, compartment_name in enumerate(present_compartments):
+        ax = axes[i]
+        compartment_data_series = disagreement_df[disagreement_df['compartment'] == compartment_name]['disagreement_percentage']
+        
+        if compartment_data_series.empty: 
+            ax.set_title(f'Disagreement Percentage - {compartment_name} (No Data)')
+            ax.text(0.5, 0.5, "No data available for this compartment.", 
+                    horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
+            continue
+
+        # Plot histogram using matplotlib directly
+        ax.hist(
+            compartment_data_series.to_numpy(), 
+            bins=30,                            
+            density=True,                       
+            alpha=0.75,                         
+            label=f'{compartment_name.upper()} Data' # Adjusted label for clarity
+        )
+        
+        # Add vertical line at the maximum value
+        max_val = compartment_data_series.max()
+        ax.axvline(max_val, color='r', linestyle='dashed', linewidth=2, label=f'Max: {max_val:.2f}%')
+        
+        ax.set_title(f'Distribution of Disagreement Percentage - {compartment_name.upper()}') 
+        ax.set_ylabel('Density')
+        ax.grid(True, linestyle='--', alpha=0.7)
+        ax.legend() # Add legend to show data label and max value line
+    
+    # Common X-axis label
+    if num_compartments > 0:
+        axes[-1].set_xlabel('Disagreement Percentage (%)')
+
+    fig.suptitle('Disagreement Percentage between SAM and Fiji (Normalized Max Intensity)', fontsize=16)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) 
+
+    try:
+        plt.savefig(output_path)
+        print(f"\nDisagreement histogram saved to: {output_path}")
+    except Exception as e:
+        print(f"Error saving histogram: {e}")
+    
+    plt.close(fig)
+
+
+analyze_all_disagreements()
 
 
 

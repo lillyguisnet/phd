@@ -74,10 +74,10 @@ inference_state = predictor.init_state(video_path=video_dir)
 
 
 prompts = {}
-ann_frame_idx = 0  #frame index
+ann_frame_idx = 299  #frame index
 ann_obj_id = 2  #object id
-points = np.array([[250, 250], [250, 400]], dtype=np.float32) #whole worm body
-labels = np.array([1, 1], np.int32)
+points = np.array([[600, 400]], dtype=np.float32) #whole worm body
+labels = np.array([1], np.int32)
 prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
     inference_state=inference_state,
@@ -100,8 +100,8 @@ plt.close()
 
 
 video_segments = {}  # video_segments contains the per-frame segmentation results
-for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
-#for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=ann_frame_idx, reverse=True):
+#for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
+for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=ann_frame_idx, reverse=True):
     video_segments[out_frame_idx] = {
         out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
         for i, out_obj_id in enumerate(out_obj_ids)
@@ -236,7 +236,7 @@ def create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.99):
 
 image_dir = video_dir
 masks_dict = video_segments
-output_path = "ff_head_segments_video.mp4"
+output_path = "ff_head_segments_video_river_2.mp4"
 
 create_mask_video(image_dir, masks_dict, output_path, fps=10, alpha=0.98)
 

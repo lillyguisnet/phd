@@ -304,11 +304,11 @@ def process_random_unprocessed_video(video_files_dir, output_dir):
 
 # Example usage
 video_files = "/home/lilly/phd/ria/data_original/AG"
-save_jpg_dir = "/home/lilly/phd/ria/data_foranalysis/videotojpg"
+save_jpg_dir = "/home/lilly/phd/ria/tst_appleworm/data/tojpg"
 
 process_random_unprocessed_video(video_files, save_jpg_dir)
 
-vid = "/home/lilly/phd/ria/data_original/AG/MMH99_10s_20190306_02.tif"
+vid = "/home/lilly/phd/ria/tst_appleworm/data/raw/Media1.avi"
 process_file(vid, save_jpg_dir)
 
 

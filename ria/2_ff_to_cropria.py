@@ -76,8 +76,8 @@ frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 inference_state = predictor.init_state(video_path=random_video_dir)
 
 
-points=np.array([[280, 365], [250, 375], [270, 450], [270, 300]], dtype=np.float32) #RIA region
-labels=np.array([1, 1, 0, 0], np.int32)
+points=np.array([[590, 315]], dtype=np.float32) #RIA region
+labels=np.array([1], np.int32)
 
 prompts = {}
 ann_frame_idx = len(frame_names) - 1 # Use the last frame
@@ -249,7 +249,7 @@ with open('/home/maxime/prg/phd/dropletswimming/data_analyzed/fframe_segmentatio
 
 from PIL import Image
 
-mask = video_segments[4][2][0]
+mask = video_segments[67][2][0]
 
 image_array = np.uint8(mask	 * 255)
 image = Image.fromarray(image_array)

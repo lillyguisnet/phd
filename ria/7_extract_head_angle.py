@@ -87,6 +87,7 @@ head_segmentation_dir = "/home/lilly/phd/ria/data_analyzed/AG_WT/head_segmentati
 final_data_dir = "/home/lilly/phd/ria/data_analyzed/AG_WT/final_data/"
 
 filename = get_random_unprocessed_video(head_segmentation_dir, final_data_dir)
+filename = "/home/lilly/phd/ria/data_analyzed/AG_WT/head_segmentation/AG_WT-hannah_headsegmentation.h5"
 head_segments = load_cleaned_segments_from_h5(filename)
 
 
@@ -207,7 +208,7 @@ def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150):
     return truncated_skeletons
 
 # Now use it on your skeletons dictionary
-truncated_skeletons = truncate_skeleton_fixed(skeletons, keep_pixels=200)
+truncated_skeletons = truncate_skeleton_fixed(skeletons, keep_pixels=400) #200
 
 
 
@@ -1152,7 +1153,7 @@ ax1.legend(lines, labels, loc='upper right')
 plt.title('Head Angle and Bend Position Over Time')
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig('head_angles_and_bends_new.png')
+plt.savefig('head_angles_and_bends_new_river.png')
 plt.close()
 
 
@@ -1465,7 +1466,7 @@ image_dir = video_dir
 bottom_masks = head_segments
 top_masks = truncated_skeletons
 angle_results = merged_df
-output_path = "head_skeleton_angles_video2.mp4"
+output_path = "head_skeleton_angles_video2_river.mp4"
 
 create_layered_mask_video(
     image_dir=image_dir,
