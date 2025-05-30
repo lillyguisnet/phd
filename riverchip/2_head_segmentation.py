@@ -55,8 +55,8 @@ def get_random_unprocessed_video(parent_dir, head_segmentation_dir):
     return os.path.join(parent_dir, random.choice(unprocessed_videos))
 
 
-parent_video_dir = '/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg'
-head_segmentation_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/head_segmentation'
+parent_video_dir = '/home/lilly/phd/riverchip/data_foranalysis/videotojpg'
+head_segmentation_dir = '/home/lilly/phd/riverchip/data_analyzed/head_segmentation'
 
 # Get a random unprocessed video
 video_dir = get_random_unprocessed_video(parent_video_dir, head_segmentation_dir)
@@ -74,10 +74,10 @@ inference_state = predictor.init_state(video_path=video_dir)
 
 
 prompts = {}
-ann_frame_idx = 299  #frame index
+ann_frame_idx = 599  #frame index
 ann_obj_id = 2  #object id
-points = np.array([[600, 400]], dtype=np.float32) #whole worm body
-labels = np.array([1], np.int32)
+points = np.array([[550, 900], [510, 380]], dtype=np.float32) #whole worm body
+labels = np.array([1, 1], np.int32)
 prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
     inference_state=inference_state,
@@ -249,7 +249,7 @@ def save_cleaned_segments_to_h5(cleaned_segments, filename):
     # Create the output filename
     base_name = os.path.basename(filename)
     name_without_ext = os.path.splitext(base_name)[0]
-    output_filename = f"/home/lilly/phd/ria/data_analyzed/AG_WT/head_segmentation/{name_without_ext}_headsegmentation.h5"
+    output_filename = f"{head_segmentation_dir}/{name_without_ext}_headsegmentation.h5"
     
     # Ensure the directory exists
     os.makedirs(os.path.dirname(output_filename), exist_ok=True)
