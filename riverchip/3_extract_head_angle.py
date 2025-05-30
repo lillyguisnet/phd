@@ -64,18 +64,14 @@ def get_random_unprocessed_video(head_segmentation_dir, final_data_dir):
     # Get all head segmentation files
     all_videos = [f for f in os.listdir(head_segmentation_dir) if f.endswith("_headsegmentation.h5")]
     
-    # For each video, check if it has a corresponding file in final_data_dir but no _headangles.csv
+    # For each video, check if it doesn't have a corresponding _headangles.csv file
     processable_videos = []
     for video in all_videos:
         # Extract base name by removing _headsegmentation.h5
         base_name = video.replace("_headsegmentation.h5", "")
         
-        # Add _crop_riasegmentation to match final data naming
-        final_data_base = base_name + "_crop_riasegmentation"
-        
-        # Check if corresponding cleanedalignedsegments exists but headangles.csv doesn't
-        if os.path.exists(os.path.join(final_data_dir, final_data_base + "_cleanedalignedsegments.csv")) and \
-           not os.path.exists(os.path.join(final_data_dir, final_data_base + "_headangles.csv")):
+        # Check if headangles.csv doesn't exist for this base name
+        if not os.path.exists(os.path.join(final_data_dir, base_name + "_headangles.csv")):
             processable_videos.append(video)
     
     if not processable_videos:
@@ -83,11 +79,10 @@ def get_random_unprocessed_video(head_segmentation_dir, final_data_dir):
     
     return os.path.join(head_segmentation_dir, random.choice(processable_videos))
 
-head_segmentation_dir = "/home/lilly/phd/ria/data_analyzed/AG_WT/head_segmentation/"
-final_data_dir = "/home/lilly/phd/ria/data_analyzed/AG_WT/final_data/"
+head_segmentation_dir = "/home/lilly/phd/riverchip/data_analyzed/head_segmentation"
+final_data_dir = "/home/lilly/phd/riverchip/data_analyzed/final_data"
 
 filename = get_random_unprocessed_video(head_segmentation_dir, final_data_dir)
-filename = "/home/lilly/phd/ria/data_analyzed/AG_WT/head_segmentation/AG_WT-hannah_headsegmentation.h5"
 head_segments = load_cleaned_segments_from_h5(filename)
 
 
@@ -151,19 +146,90 @@ skeletons, skeleton_stats = process_all_frames(head_segments)
 
 
 ###Truncate skeletons
-def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150):
+def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150, adaptive_mode=False, skeleton_stats=None):
     """
     Keeps only the top specified number of pixels of skeletons in a dictionary.
     
     Args:
         skeleton_dict: Dictionary with frame indices as keys and inner dictionaries 
                       containing skeletons as values of shape (1, h, w)
-        keep_pixels: Number of pixels to keep from the top (default 150)
+        keep_pixels: Number of pixels to keep from the top (default 150), ignored if adaptive_mode=True
+        adaptive_mode: If True, use 10% less than the smallest skeleton height
+        skeleton_stats: Dictionary containing skeleton statistics (required if adaptive_mode=True)
     
     Returns:
         Dictionary with truncated skeletons
     """
     truncated_skeletons = {}
+    
+    # Calculate adaptive keep_pixels if requested
+    if adaptive_mode:
+        if skeleton_stats is None:
+            raise ValueError("skeleton_stats must be provided when adaptive_mode=True")
+        
+        # Use 90% of the minimum skeleton pixel count from skeleton_stats
+        min_pixel_count = skeleton_stats['min_size']
+        target_pixel_count = int(min_pixel_count * 0.9)  # 10% less than smallest
+        
+        print(f"Adaptive mode: Target pixel count = {target_pixel_count} (90% of smallest skeleton: {min_pixel_count} pixels)")
+        
+        # Find the truncation point that achieves approximately this pixel count
+        # We'll use a binary search approach to find the right cutoff height
+        def find_truncation_height_for_target_pixels(skeleton_dict, target_pixels):
+            """Find the height that results in closest to target pixel count"""
+            # Sample a few skeletons to estimate the relationship
+            sample_results = []
+            sample_count = 0
+            max_samples = 20  # Limit sampling for efficiency
+            
+            for frame_idx, frame_data in skeleton_dict.items():
+                if sample_count >= max_samples:
+                    break
+                for obj_id, skeleton in frame_data.items():
+                    if sample_count >= max_samples:
+                        break
+                    
+                    skeleton_2d = skeleton[0]
+                    points = np.where(skeleton_2d)
+                    if len(points[0]) == 0:
+                        continue
+                    
+                    y_min = np.min(points[0])
+                    y_max = np.max(points[0])
+                    total_height = y_max - y_min
+                    total_pixels = np.sum(skeleton_2d)
+                    
+                    # Try different truncation heights and see resulting pixel counts
+                    for frac in [0.3, 0.5, 0.7, 0.9]:
+                        truncate_height = int(total_height * frac)
+                        cutoff_point = y_min + truncate_height
+                        
+                        # Create temporary truncated version
+                        temp_skeleton = skeleton_2d.copy()
+                        temp_skeleton[cutoff_point:, :] = False
+                        truncated_pixels = np.sum(temp_skeleton)
+                        
+                        sample_results.append((truncate_height, truncated_pixels, total_height, total_pixels))
+                    
+                    sample_count += 1
+            
+            if not sample_results:
+                return 150  # Fallback default
+            
+            # Find the truncation height that gets us closest to target
+            best_height = 150
+            best_diff = float('inf')
+            
+            for height, pixels, total_h, total_p in sample_results:
+                diff = abs(pixels - target_pixels)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_height = height
+            
+            return best_height
+        
+        keep_pixels = find_truncation_height_for_target_pixels(skeleton_dict, target_pixel_count)
+        print(f"Adaptive mode: Using truncation height of {keep_pixels} pixels to achieve ~{target_pixel_count} skeleton pixels")
     
     for frame_idx, frame_data in skeleton_dict.items():
         frame_truncated = {}
@@ -192,13 +258,18 @@ def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150):
             
             # Verify the truncation
             new_points = np.where(truncated[0])
-            new_height = np.max(new_points[0]) - np.min(new_points[0])
+            if len(new_points[0]) > 0:
+                new_height = np.max(new_points[0]) - np.min(new_points[0])
+            else:
+                new_height = 0
             
             print(f"Frame {frame_idx}, Object {obj_id}:")
             print(f"Original height: {original_height}")
             print(f"New height: {new_height}")
             print(f"Top point: {y_min}")
             print(f"Cutoff point: {cutoff_point}")
+            if adaptive_mode:
+                print(f"Adaptive keep_pixels: {keep_pixels}")
             print("------------------------")
             
             frame_truncated[obj_id] = truncated
@@ -207,8 +278,12 @@ def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150):
     
     return truncated_skeletons
 
-# Now use it on your skeletons dictionary
-truncated_skeletons = truncate_skeleton_fixed(skeletons, keep_pixels=400) #200
+# Now use it on your skeletons dictionary with adaptive mode option
+# Option 1: Use fixed pixels (original behavior)
+# truncated_skeletons = truncate_skeleton_fixed(skeletons, keep_pixels=400) #200
+
+# Option 2: Use adaptive mode (10% less than smallest skeleton)
+truncated_skeletons = truncate_skeleton_fixed(skeletons, adaptive_mode=True, skeleton_stats=skeleton_stats)
 
 
 
@@ -508,6 +583,7 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
         
         best_result = None
         max_angle_magnitude = 0
+        fallback_results = []  # Store results that don't meet continuity but are valid calculations
         
         for head_section in head_sections:
             head_end_idx = max(2, int(head_section * len(norm_points)))
@@ -532,34 +608,66 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
             angle_rad = np.arccos(cos_angle)
             angle_deg = np.degrees(angle_rad)
             
+            # Improved sign determination with continuity checking
             cross_product = np.cross(body_vector, head_vector)
+            
+            # Apply initial sign based on cross product
             if cross_product < 0:
                 angle_deg = -angle_deg
             
+            # Create result structure for this calculation
+            current_result = {
+                'angle_degrees': float(angle_deg),
+                'head_start_pos': head_start.tolist(),
+                'head_end_pos': head_end.tolist(),
+                'body_start_pos': body_start.tolist(),
+                'body_end_pos': body_end.tolist(),
+                'head_vector': head_vector.tolist(),
+                'body_vector': body_vector.tolist(),
+                'head_mag': float(head_mag),
+                'body_mag': float(body_mag),
+                'head_section': head_section,
+                'skeleton_points': norm_points.tolist(),
+                'error': None
+            }
+            
+            # If we have a previous angle, check for sign consistency
             if prev_angle is not None:
                 angle_change = abs(angle_deg - prev_angle)
+                
+                # If the angle change is too large, try flipping the sign
                 if angle_change > 25:
-                    continue
+                    flipped_angle = -angle_deg
+                    flipped_change = abs(flipped_angle - prev_angle)
+                    
+                    # If flipping the sign gives a more reasonable change, use it
+                    if flipped_change < angle_change and flipped_change <= 25:
+                        angle_deg = flipped_angle
+                        current_result['angle_degrees'] = float(angle_deg)
+                        angle_change = flipped_change
+                    else:
+                        # Neither sign gives reasonable change - store as fallback but continue looking
+                        fallback_results.append((current_result, angle_change))
+                        # Try the flipped version as another fallback option
+                        flipped_result = current_result.copy()
+                        flipped_result['angle_degrees'] = float(flipped_angle)
+                        fallback_results.append((flipped_result, flipped_change))
+                        continue
             
+            # If we get here, the result meets our continuity criteria
             if abs(angle_deg) > max_angle_magnitude:
                 max_angle_magnitude = abs(angle_deg)
-                best_result = {
-                    'angle_degrees': float(angle_deg),
-                    'head_start_pos': head_start.tolist(),
-                    'head_end_pos': head_end.tolist(),
-                    'body_start_pos': body_start.tolist(),
-                    'body_end_pos': body_end.tolist(),
-                    'head_vector': head_vector.tolist(),
-                    'body_vector': body_vector.tolist(),
-                    'head_mag': float(head_mag),
-                    'body_mag': float(body_mag),
-                    'head_section': head_section,
-                    'skeleton_points': norm_points.tolist(),
-                    'error': None
-                }
+                best_result = current_result
+        
+        # If no result met our continuity criteria, use the best fallback
+        if best_result is None and fallback_results:
+            # Choose the fallback with the smallest angle change
+            best_fallback, min_change = min(fallback_results, key=lambda x: x[1])
+            best_result = best_fallback
+            best_result['error'] = f'Used fallback due to large angle change ({min_change:.1f}°)'
         
         if best_result is None:
-            # No valid angle found - use previous angle or default
+            # No valid angle found at all - use previous angle or default
             best_result = {
                 'angle_degrees': prev_angle if prev_angle is not None else 0,
                 'error': 'No valid angle found with current parameters',
@@ -777,7 +885,7 @@ def plot_skeleton_with_bend(frame_idx, obj_id, truncated_skeletons, head_angle_r
 
 def process_skeleton_batch(truncated_skeletons, min_vector_length=5, 
                          restriction_point=0.5, straight_threshold=3,
-                         smoothing_window=3, deviation_threshold=15):
+                         smoothing_window=3, deviation_threshold=50):
     """
     Process a batch of skeletons with head angle smoothing and bend recalculation.
     Handles all frames gracefully with smooth interpolation between valid frames.
@@ -802,11 +910,12 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
     pandas.DataFrame
         Complete DataFrame with smoothed angles and recalculated bend positions
     """
-    # First pass: Calculate initial angles with graceful error handling
+    # First pass: Calculate initial angles with sequential previous angle tracking
     initial_data = []
     frame_results = {}  # Store results by frame and object
+    prev_angles_by_object = {}  # Track previous angles for each object
     
-    # First pass to collect all valid results
+    # Process frames in order to maintain angle continuity
     for frame_idx in sorted(truncated_skeletons.keys()):
         frame_data = truncated_skeletons[frame_idx]
         frame_results[frame_idx] = {}
@@ -814,9 +923,12 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
         for obj_id, skeleton_data in frame_data.items():
             skeleton = skeleton_data[0]
             
+            # Get previous angle for this object
+            prev_angle = prev_angles_by_object.get(obj_id, None)
+            
             result = calculate_head_angle_with_positions_and_bend(
                 skeleton,
-                prev_angle=None,  # Don't use prev_angle in first pass
+                prev_angle=prev_angle,  # Use previous angle for continuity
                 min_vector_length=min_vector_length,
                 restriction_point=restriction_point,
                 straight_threshold=straight_threshold
@@ -824,13 +936,29 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
             
             # Store result regardless of error status
             frame_results[frame_idx][obj_id] = result
+            
+            # Update previous angle ONLY if calculation was completely successful (no error)
+            # Don't update if it's a fallback or any other error to prevent bad values from propagating
+            if result['error'] is None:
+                prev_angles_by_object[obj_id] = result['angle_degrees']
+            
+            # Debug: Print information for frames around the problem area
+            if 420 <= frame_idx <= 430:
+                print(f"Frame {frame_idx}, Object {obj_id}:")
+                print(f"  Calculated angle: {result['angle_degrees']}")
+                print(f"  Error: {result['error']}")
+                print(f"  Previous angle used: {prev_angles_by_object.get(obj_id, 'None')}")
+                print(f"  Will update prev_angle: {result['error'] is None}")
+                print("---")
     
     # Second pass to interpolate invalid frames
     for frame_idx in sorted(truncated_skeletons.keys()):
         for obj_id in frame_results[frame_idx].keys():
             result = frame_results[frame_idx][obj_id]
             
-            if result['error'] is not None:
+            # Only interpolate frames with genuine errors, NOT fallback results
+            # Fallback results are valid calculations, just with large angle changes
+            if result['error'] is not None and 'Used fallback' not in result['error']:
                 # Find previous and next valid frames
                 prev_valid_frame = None
                 prev_valid_result = None
@@ -926,39 +1054,36 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
     
     # Convert to DataFrame and apply head angle smoothing
     initial_df = pd.DataFrame(initial_data)
-    smoothed_df = smooth_head_angles_with_validation(
-        initial_df,
-        id_column='object_id',
-        angle_column='angle_degrees',
-        window_size=smoothing_window,
-        deviation_threshold=deviation_threshold
-    )
+    # smoothed_df = smooth_head_angles_with_validation(
+    #     initial_df,
+    #     id_column='object_id',
+    #     angle_column='angle_degrees',
+    #     window_size=smoothing_window,
+    #     deviation_threshold=deviation_threshold
+    # )
+    
+    # Temporarily use initial_df without smoothing to test
+    smoothed_df = initial_df.copy()
+    smoothed_df['is_noise_peak'] = False
+    smoothed_df['peak_deviation'] = 0.0
+    smoothed_df['window_size_used'] = 0
     
     # Final pass: Recalculate bend positions based on smoothed angles
+    # Use the smoothed angles directly rather than recalculating
     final_data = []
     
     # Group by object_id to maintain continuity
     for obj_id in smoothed_df['object_id'].unique():
-        obj_data = smoothed_df[smoothed_df['object_id'] == obj_id]
+        obj_data = smoothed_df[smoothed_df['object_id'] == obj_id].sort_values('frame')
         
-        prev_angle = None
         for _, row in obj_data.iterrows():
             frame_idx = row['frame']
-            # Get the corresponding skeleton
-            skeleton = truncated_skeletons[frame_idx][obj_id][0]
             
-            # Calculate bend position with the smoothed angle
-            new_result = calculate_head_angle_with_positions_and_bend(
-                skeleton,
-                prev_angle=prev_angle,
-                min_vector_length=min_vector_length,
-                restriction_point=restriction_point,
-                straight_threshold=straight_threshold
-            )
-            prev_angle = row['angle_degrees']
-            
-            # Use the smoothed angle from the dataframe but updated bend calculations
+            # Use the smoothed angle from the dataframe
             is_straight = abs(row['angle_degrees']) <= straight_threshold
+            
+            # Get bend values from the original calculation
+            original_result = frame_results[frame_idx][obj_id]
             
             # Set bend values based on straight vs non-straight
             if is_straight:
@@ -967,11 +1092,11 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
                 bend_position_y = 0
                 bend_position_x = 0
             else:
-                # Use calculated values
-                bend_location = new_result['bend_location']
-                bend_magnitude = new_result['bend_magnitude']
-                bend_position_y = new_result['bend_position'][0]
-                bend_position_x = new_result['bend_position'][1]
+                # Use original calculated values
+                bend_location = original_result['bend_location']
+                bend_magnitude = original_result['bend_magnitude']
+                bend_position_y = original_result['bend_position'][0]
+                bend_position_x = original_result['bend_position'][1]
             
             final_result = {
                 'frame': frame_idx,
@@ -981,14 +1106,23 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
                 'bend_magnitude': bend_magnitude,
                 'bend_position_y': bend_position_y,
                 'bend_position_x': bend_position_x,
-                'head_mag': new_result['head_mag'],
-                'body_mag': new_result['body_mag'],
+                'head_mag': original_result['head_mag'],
+                'body_mag': original_result['body_mag'],
                 'is_noise_peak': row['is_noise_peak'],
                 'peak_deviation': row['peak_deviation'],
                 'window_size_used': row['window_size_used'],
                 'is_straight': is_straight,
-                'error': new_result.get('error', None)
+                'error': original_result.get('error', None)
             }
+            
+            # Debug: Print information for frames around the problem area
+            if 420 <= frame_idx <= 430:
+                print(f"Final assembly - Frame {frame_idx}, Object {obj_id}:")
+                print(f"  Row angle_degrees: {row['angle_degrees']}")
+                print(f"  Original calculated angle: {original_result['angle_degrees']}")
+                print(f"  Final result angle: {final_result['angle_degrees']}")
+                print(f"  Is straight: {is_straight}")
+                print("===")
             
             final_data.append(final_result)
     
@@ -1114,7 +1248,7 @@ results_df = process_skeleton_batch(
     restriction_point=0.5,
     straight_threshold=3,
     smoothing_window=3,
-    deviation_threshold=12
+    deviation_threshold=50  # Increased threshold to be less aggressive
 )
 
 
@@ -1138,7 +1272,7 @@ l1, = ax1.plot(frame_data, angle_data, 'b.-', alpha=0.7, label='Head Angle')
 ax1.set_xlabel('Frame')
 ax1.set_ylabel('Head Angle (degrees)', color='b')
 ax1.tick_params(axis='y', labelcolor='b')
-ax1.set_ylim(-90, 90)  # Set y-axis limits for head angle
+ax1.set_ylim(-150, 150)  # Set y-axis limits for head angle
 
 # Plot bend position on right y-axis
 l2, = ax2.plot(frame_data, bend_data, 'r.-', alpha=0.7, label='Bend Position Y')
@@ -1402,7 +1536,7 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
                       for i, mask_id in enumerate(top_mask_ids)}
 
     # Convert angles DataFrame to dictionary for faster lookup
-    angles_dict = angles_df.set_index('frame')['angle_degrees_corrected'].to_dict()
+    angles_dict = angles_df.set_index('frame')['angle_degrees'].to_dict()
 
     # Process each frame
     for frame_number, image_file in frame_numbers:
@@ -1461,11 +1595,11 @@ def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angl
     print(f"Video saved to {output_path}")
 
 
-video_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg/AG_WT-MMH99_10s_20190314_02"
+video_dir = "/home/lilly/phd/riverchip/data_foranalysis/videotojpg/data_original-hannah"
 image_dir = video_dir
 bottom_masks = head_segments
 top_masks = truncated_skeletons
-angle_results = merged_df
+angle_results = results_df
 output_path = "head_skeleton_angles_video2_river.mp4"
 
 create_layered_mask_video(
