@@ -7,8 +7,6 @@ import logging
 import random
 import tqdm
 
-#Limit frames to 1 min
-
 def get_supported_video_extensions():
     return ['.avi', '.mp4', '.mov', '.mkv', '.wmv', '.flv', '.gif']
 
@@ -46,7 +44,7 @@ def check_file_readability(file_path):
         cap.release()
         return True, ""
 
-def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, output_format='jpg', force_reprocess=False, convert_existing=False):
+def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, output_format='jpg', force_reprocess=False, convert_existing=False, duration_seconds=None, start_time_seconds=0, flip_vertical=False):
     file_path = Path(file_path)
     output_dir = Path(output_dir)
     
@@ -80,7 +78,7 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
                 global_max = max(global_max, frame_max)
             print(f"Global range: {global_min} to {global_max}")
 
-            total_frames = len(tif.pages)
+            total_frames_in_file = len(tif.pages)
             first_page = tif.pages[0]
             orig_width, orig_height = first_page.shape[1], first_page.shape[0]
 
@@ -100,6 +98,23 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
 
                 return frame_8bit
 
+            # For TIF stacks, assume a default FPS if not provided
+            if fps is None:
+                fps = 10  # Default fps for TIF stacks
+            
+            # Calculate frame range for TIF stacks
+            if duration_seconds is not None:
+                start_frame = int(start_time_seconds * fps)
+                end_frame = int((start_time_seconds + duration_seconds) * fps)
+                end_frame = min(end_frame, total_frames_in_file)
+                start_frame = min(start_frame, total_frames_in_file - 1)
+                total_frames = end_frame - start_frame
+                frame_range = range(start_frame, end_frame)
+                print(f"Processing TIF frames {start_frame} to {end_frame-1} (total: {total_frames} frames)")
+            else:
+                total_frames = total_frames_in_file
+                frame_range = range(total_frames)
+                print(f"Processing all {total_frames} TIF frames")
 
     else:
         # Process video
@@ -107,7 +122,39 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
         orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         video_fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Calculate frame range for videos
+        if duration_seconds is not None:
+            if fps is None:
+                fps = video_fps  # Use video's original FPS if not specified
+            
+            # Calculate which frames to extract based on desired FPS and duration
+            start_frame = int(start_time_seconds * video_fps)
+            end_time = start_time_seconds + duration_seconds
+            end_frame = int(end_time * video_fps)
+            end_frame = min(end_frame, total_frames_in_file)
+            start_frame = min(start_frame, total_frames_in_file - 1)
+            
+            # Calculate frame interval based on desired FPS vs video FPS
+            frame_interval = max(1, int(video_fps / fps))
+            
+            # Generate frame numbers to extract
+            frame_range = range(start_frame, end_frame, frame_interval)
+            total_frames = len(frame_range)
+            
+            print(f"Extracting {total_frames} frames from video:")
+            print(f"  - Time range: {start_time_seconds}s to {end_time}s")
+            print(f"  - Frame range: {start_frame} to {end_frame-1}")
+            print(f"  - Frame interval: every {frame_interval} frames")
+            print(f"  - Target FPS: {fps}, Video FPS: {video_fps}")
+        else:
+            if fps is None:
+                fps = video_fps
+            frame_interval = max(1, int(video_fps / fps))
+            frame_range = range(0, total_frames_in_file, frame_interval)
+            total_frames = len(frame_range)
+            print(f"Processing all video frames with interval {frame_interval} (total: {total_frames} frames)")
     
     if max_dimension and (orig_width > max_dimension or orig_height > max_dimension):
         scale = max_dimension / max(orig_width, orig_height)
@@ -116,13 +163,8 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
     else:
         new_width, new_height = orig_width, orig_height
     
-    if fps is None and 'video_fps' in locals():
-        fps = video_fps
-    elif fps is None:
-        fps = 10  # Default fps for TIF stacks
-    
-    # Process all frames
-    expected_frame_numbers = range(total_frames)
+    # Process frames based on the calculated frame range
+    expected_frame_numbers = list(frame_range)
     
     # Check for existing frames in all supported formats
     existing_frames = []
@@ -170,6 +212,10 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
 
         if (new_width, new_height) != (orig_width, orig_height):
             frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+        # Apply vertical flip if requested (flips top and bottom)
+        if flip_vertical:
+            frame = cv2.flip(frame, 0)  # 0 means flip around x-axis (vertical flip)
 
         frame_path = file_output_dir / f"{frame_number:06d}.{output_format}"
 
@@ -229,13 +275,14 @@ def process_file_for_sam2(file_path, output_dir, fps=None, max_dimension=None, o
 
     return frame_paths, new_height, new_width, inconsistencies, frame_stats
 
-def process_file(file_path, output_dir, force_reprocess=False):
+def process_file(file_path, output_dir, force_reprocess=False, duration_seconds=None, start_time_seconds=0, fps=None, flip_vertical=False):
     try:
         file_path = Path(file_path)
         output_dir = Path(output_dir)
         
         frame_paths, file_height, file_width, inconsistencies, frame_stats = process_file_for_sam2(
-            file_path, output_dir, output_format='jpg', force_reprocess=force_reprocess)
+            file_path, output_dir, fps=fps, output_format='jpg', force_reprocess=force_reprocess, 
+            duration_seconds=duration_seconds, start_time_seconds=start_time_seconds, flip_vertical=flip_vertical)
 
         # Get the subfolder name of the file path
         sub_folder_name = file_path.parent.name
@@ -251,6 +298,10 @@ def process_file(file_path, output_dir, force_reprocess=False):
         print(f"Total frames in output: {len(frame_paths)}")
         print(f"File dimensions: {file_width}x{file_height}")
         print(f"Frames saved in: {output_dir / correct_folder_name}")
+        if duration_seconds is not None:
+            print(f"Duration processed: {duration_seconds} seconds starting at {start_time_seconds}s")
+        if flip_vertical:
+            print("Applied vertical flip to all frames")
         if inconsistencies:
             print("Inconsistencies found:")
             for inc in inconsistencies:
@@ -261,7 +312,7 @@ def process_file(file_path, output_dir, force_reprocess=False):
     except ValueError as e:
         print(f"Error processing file: {e}")
 
-def process_random_unprocessed_video(video_files_dir, output_dir):
+def process_random_unprocessed_video(video_files_dir, output_dir, duration_seconds=None, start_time_seconds=0, fps=None, flip_vertical=False):
     video_files_dir = Path(video_files_dir)
     output_dir = Path(output_dir)
 
@@ -284,19 +335,25 @@ def process_random_unprocessed_video(video_files_dir, output_dir):
     random_video = random.choice(unprocessed_videos)
 
     print(f"Processing video: {random_video}")
-    process_file(random_video, output_dir)
+    process_file(random_video, output_dir, duration_seconds=duration_seconds, start_time_seconds=start_time_seconds, fps=fps, flip_vertical=flip_vertical)
     print(f"Done processing video: {random_video}")
     return random_video
 
 
 
 
-video_files = "/home/lilly/phd/ria/data_original/AG_WT"
+video_files = "/home/lilly/phd/riverchip/data_original"
 #"/home/lilly/phd/ria/tst_free/original"
 
-save_jpg_dir = "/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg"
+save_jpg_dir = "/home/lilly/phd/riverchip/data_foranalysis/videotojpg"
 #"/home/lilly/phd/ria/tst_free/tojpg"
 
+# Example: Extract 60 seconds with vertical flip (top and bottom swapped)
+vid = process_random_unprocessed_video(video_files, save_jpg_dir, duration_seconds=60, start_time_seconds=0, fps=10, flip_vertical=True)
 
-vid = process_random_unprocessed_video(video_files, save_jpg_dir)
+# Extract entire video (original behavior)
+#vid = process_random_unprocessed_video(video_files, save_jpg_dir)
 
+# Alternative examples:
+# Process a specific file with duration limit and vertical flip
+# process_file("/path/to/video.mp4", save_jpg_dir, duration_seconds=60, start_time_seconds=0, fps=10, flip_vertical=True)
