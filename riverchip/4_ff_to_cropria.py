@@ -57,8 +57,8 @@ def get_random_unprocessed_video(parent_dir, crop_dir):
 
 
 
-parent_video_dir = '/home/lilly/phd/ria/data_foranalysis/AG_WT/videotojpg'
-crop_dir = '/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/'
+parent_video_dir = '/home/lilly/phd/riverchip/data_foranalysis/videotojpg/'
+crop_dir = '/home/lilly/phd/riverchip/data_foranalysis/riacrop/'
 
 
 # Get a random unprocessed video
@@ -76,7 +76,7 @@ frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 inference_state = predictor.init_state(video_path=random_video_dir)
 
 
-points=np.array([[590, 315]], dtype=np.float32) #RIA region
+points=np.array([[560, 700]], dtype=np.float32) #RIA region
 labels=np.array([1], np.int32)
 
 prompts = {}
