@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import numpy.linalg as la
 from scipy import interpolate, ndimage
+from scipy.spatial.distance import cdist
 from .config import Config
 
 def smooth_head_angles(angles, window_size=3, deviation_threshold=15):
@@ -243,6 +244,186 @@ def gaussian_weighted_curvature(points, window_size=25, sigma=8, restriction_poi
     
     return full_curvatures
 
+def order_skeleton_points_by_path(skeleton):
+    """
+    Order skeleton points by following the connected path from one tip to the other.
+    This ensures proper head-to-tail ordering regardless of curvature.
+    
+    Parameters:
+    -----------
+    skeleton : ndarray
+        Binary skeleton image
+        
+    Returns:
+    --------
+    ordered_points : ndarray
+        Points ordered from one tip to the other
+    success : bool
+        Whether the ordering was successful
+    """
+    # Get all skeleton points
+    points = np.column_stack(np.where(skeleton))
+    if len(points) == 0:
+        return points, False
+    
+    # If only one or two points, return as is
+    if len(points) <= 2:
+        return points, True
+    
+    try:
+        # Build adjacency information by finding neighbors for each point
+        # Two points are neighbors if they are within distance sqrt(2) (diagonal neighbors)
+        distances = cdist(points, points)
+        adjacency = distances <= np.sqrt(2)
+        np.fill_diagonal(adjacency, False)  # Remove self-connections
+        
+        # Count neighbors for each point
+        neighbor_counts = np.sum(adjacency, axis=1)
+        
+        # Find endpoints (points with only 1 neighbor)
+        endpoints = np.where(neighbor_counts == 1)[0]
+        
+        # If we don't have exactly 2 endpoints, try to handle gracefully
+        if len(endpoints) == 0:
+            # No clear endpoints - this might be a loop or very noisy skeleton
+            # Fall back to using the points that are furthest apart
+            distances_between_points = cdist(points, points)
+            max_dist_idx = np.unravel_index(np.argmax(distances_between_points), distances_between_points.shape)
+            start_idx = max_dist_idx[0]
+        elif len(endpoints) == 1:
+            # Only one endpoint - start from there
+            start_idx = endpoints[0]
+        elif len(endpoints) >= 2:
+            # Multiple endpoints - choose the two that are furthest apart
+            endpoint_distances = cdist(points[endpoints], points[endpoints])
+            max_dist_idx = np.unravel_index(np.argmax(endpoint_distances), endpoint_distances.shape)
+            start_idx = endpoints[max_dist_idx[0]]
+        
+        # Follow the path from the starting point
+        ordered_indices = []
+        current_idx = start_idx
+        visited = set()
+        
+        while current_idx is not None and current_idx not in visited:
+            ordered_indices.append(current_idx)
+            visited.add(current_idx)
+            
+            # Find unvisited neighbors
+            neighbors = np.where(adjacency[current_idx])[0]
+            unvisited_neighbors = [n for n in neighbors if n not in visited]
+            
+            if len(unvisited_neighbors) == 0:
+                # No more unvisited neighbors - we're done
+                break
+            elif len(unvisited_neighbors) == 1:
+                # Only one choice - continue along the path
+                current_idx = unvisited_neighbors[0]
+            else:
+                # Multiple unvisited neighbors - choose the one that continues the path most smoothly
+                if len(ordered_indices) >= 2:
+                    # Calculate direction from previous point to current point
+                    prev_point = points[ordered_indices[-2]]
+                    curr_point = points[current_idx]
+                    current_direction = curr_point - prev_point
+                    current_direction = current_direction / (np.linalg.norm(current_direction) + 1e-10)
+                    
+                    # Choose neighbor that best continues this direction
+                    best_neighbor = None
+                    best_alignment = -2  # Worst possible dot product
+                    
+                    for neighbor_idx in unvisited_neighbors:
+                        neighbor_point = points[neighbor_idx]
+                        neighbor_direction = neighbor_point - curr_point
+                        neighbor_direction = neighbor_direction / (np.linalg.norm(neighbor_direction) + 1e-10)
+                        
+                        # Calculate alignment with current direction
+                        alignment = np.dot(current_direction, neighbor_direction)
+                        if alignment > best_alignment:
+                            best_alignment = alignment
+                            best_neighbor = neighbor_idx
+                    
+                    current_idx = best_neighbor
+                else:
+                    # Not enough history - just pick the first unvisited neighbor
+                    current_idx = unvisited_neighbors[0]
+        
+        # If we didn't visit all points, there might be disconnected components
+        # Add any remaining points at the end (this handles noisy skeletons)
+        remaining_points = set(range(len(points))) - visited
+        if remaining_points:
+            # Sort remaining points by distance to the last ordered point
+            if ordered_indices:
+                last_point = points[ordered_indices[-1]]
+                remaining_indices = list(remaining_points)
+                remaining_distances = [np.linalg.norm(points[idx] - last_point) for idx in remaining_indices]
+                sorted_remaining = [x for _, x in sorted(zip(remaining_distances, remaining_indices))]
+                ordered_indices.extend(sorted_remaining)
+            else:
+                ordered_indices.extend(list(remaining_points))
+        
+        # Return the ordered points
+        ordered_points = points[ordered_indices]
+        
+        # Verify we have a reasonable result
+        if len(ordered_points) != len(points):
+            # Something went wrong - fall back to coordinate-based sorting
+            return points[np.argsort(points[:, 0])], False
+        
+        return ordered_points, True
+        
+    except Exception as e:
+        # If anything goes wrong, fall back to coordinate-based sorting
+        Config.debug_print(f"Path-based ordering failed: {e}, falling back to coordinate sorting")
+        return points[np.argsort(points[:, 0])], False
+
+def determine_head_end(ordered_points, skeleton_shape):
+    """
+    Determine which end of the ordered skeleton is the head.
+    Uses heuristics based on position and skeleton shape.
+    
+    Parameters:
+    -----------
+    ordered_points : ndarray
+        Skeleton points ordered from tip to tip
+    skeleton_shape : tuple
+        Shape of the skeleton image (height, width)
+        
+    Returns:
+    --------
+    head_first : bool
+        True if the head is at the beginning of ordered_points, False if at the end
+    """
+    if len(ordered_points) < 2:
+        return True  # Default assumption
+    
+    # Get the two endpoints
+    start_point = ordered_points[0]
+    end_point = ordered_points[-1]
+    
+    # Heuristic 1: Head is usually closer to the top of the image
+    # (assuming worms are oriented with head up or at least not at bottom)
+    start_y, start_x = start_point
+    end_y, end_x = end_point
+    
+    # The point with smaller y-coordinate (closer to top) is more likely to be the head
+    if start_y < end_y:
+        return True  # Start is head
+    elif end_y < start_y:
+        return False  # End is head
+    
+    # If y-coordinates are similar, use x-coordinate as tiebreaker
+    # This is less reliable but better than random
+    if start_x < end_x:
+        return True  # Prefer left side as head (arbitrary choice)
+    else:
+        return False
+    
+    # Could add more sophisticated heuristics here:
+    # - Analyze local curvature at endpoints
+    # - Use information from previous frames
+    # - Analyze thickness patterns
+    # But for now, position-based heuristics should work reasonably well
+
 def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_vector_length=5, 
                                              restriction_point=0.4, straight_threshold=3):
     """
@@ -295,7 +476,20 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                 'body_vector': [0, 0]
             }
         
-        ordered_points = points[np.argsort(points[:, 0])]
+        # Use path-based ordering instead of coordinate-based sorting
+        ordered_points, ordering_success = order_skeleton_points_by_path(skeleton)
+        
+        # Determine which end is the head
+        head_first = determine_head_end(ordered_points, skeleton.shape)
+        
+        # If head is at the end, reverse the order so head is at the beginning
+        if not head_first:
+            ordered_points = ordered_points[::-1]
+        
+        # Add debug information about ordering
+        if Config.DEBUG_MODE and not ordering_success:
+            Config.debug_print("Path-based ordering failed, using coordinate fallback")
+        
         norm_points, total_length = normalize_skeleton_points(ordered_points, num_points=100)
         
         # Calculate head angle - EXACT SAME LOGIC AS WORKING VERSION

@@ -21,9 +21,9 @@ def save_results(results_df, filename):
     else:
         Config.debug_print("CSV saving disabled")
 
-def generate_plots(results_df, output_filename="head_angles_and_bends.png"):
+def generate_plots(results_df, output_filename="head_angles.png"):
     """
-    Generate plots of head angles and bend positions if enabled.
+    Generate plots of head angles if enabled.
     
     Args:
         results_df: DataFrame with results
@@ -39,39 +39,30 @@ def generate_plots(results_df, output_filename="head_angles_and_bends.png"):
         
     Config.debug_print("Generating plots")
     
-    # Create plot of head angle and bend position
+    # Create plot of head angle only
     plt.figure(figsize=(12, 6))
 
-    # Create twin axes sharing x-axis
+    # Use single axis for head angle
     ax1 = plt.gca()
-    ax2 = ax1.twinx()
 
     # Convert DataFrame to numpy arrays before plotting
     frame_data = results_df['frame'].to_numpy()
     angle_data = results_df['angle_degrees'].to_numpy() 
-    bend_data = results_df['bend_location'].to_numpy()
 
     # Add shaded region between -3 and 3 degrees
     ax1.axhspan(-3, 3, color='gray', alpha=0.2, label='Straight Region')
 
-    # Plot head angle on left y-axis
+    # Plot head angle
     l1, = ax1.plot(frame_data, angle_data, 'b.-', alpha=0.7, label='Head Angle')
     ax1.set_xlabel('Frame')
     ax1.set_ylabel('Head Angle (degrees)', color='b')
     ax1.tick_params(axis='y', labelcolor='b')
     ax1.set_ylim(-180, 180)  # Set y-axis limits for head angle
 
-    # Plot bend position on right y-axis
-    l2, = ax2.plot(frame_data, bend_data, 'r.-', alpha=0.7, label='Bend Position Y')
-    ax2.set_ylabel('Bend Position Y', color='r')
-    ax2.tick_params(axis='y', labelcolor='r')
-
     # Add legend
-    lines = [l1, l2]
-    labels = [l.get_label() for l in lines]
-    ax1.legend(lines, labels, loc='upper right')
+    ax1.legend(loc='upper right')
 
-    plt.title('Head Angle and Bend Position Over Time')
+    plt.title('Head Angle Over Time')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_filename)
