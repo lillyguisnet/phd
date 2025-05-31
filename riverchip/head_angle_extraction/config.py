@@ -23,6 +23,7 @@ class Config:
     # Data Paths
     HEAD_SEGMENTATION_DIR = "/home/lilly/phd/riverchip/data_analyzed/head_segmentation"
     FINAL_DATA_DIR = "/home/lilly/phd/riverchip/data_analyzed/final_data"
+    OUTPUT_DIR = "/home/lilly/phd/riverchip/data_analyzed/final_data"  # Where to save CSV files
     VIDEO_DIR = "/home/lilly/phd/riverchip/data_foranalysis/videotojpg/data_original-hannah"
     
     # Algorithm Parameters

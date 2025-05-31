@@ -13,22 +13,42 @@ from .config import Config
 
 def save_results(results_df, filename):
     """
-    Save results to CSV.
+    Save results to CSV and return the DataFrame with smoothed angles added.
     
     Args:
         results_df: DataFrame with results
         filename: Original input filename for naming
+        
+    Returns:
+        DataFrame with smoothed angles added
     """
+    # Create a copy to avoid modifying the original dataframe
+    df_to_save = results_df.copy()
+    
+    # Add 3-frame rolling mean smoothing for each object separately
+    df_to_save['angle_degrees_smoothed_3frame'] = df_to_save.groupby('object_id')['angle_degrees'].transform(
+        lambda x: x.rolling(window=3, center=True, min_periods=1).mean()
+    )
+    
     if Config.should_save_csv():
         # Extract base filename without extension
         base_name = os.path.splitext(os.path.basename(filename))[0]
         csv_filename = f"{base_name}_head_angles.csv"
         
-        Config.debug_print(f"Saving CSV results to {csv_filename}")
-        results_df.to_csv(csv_filename, index=False)
-        print(f"✅ Results saved: {csv_filename}")
+        # Save to the configured output directory
+        output_path = os.path.join(Config.OUTPUT_DIR, csv_filename)
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
+        
+        Config.debug_print(f"Saving CSV results to {output_path}")
+        df_to_save.to_csv(output_path, index=False)
+        print(f"✅ Results saved: {output_path}")
+        print(f"   Added smoothed angle column: angle_degrees_smoothed_3frame")
     else:
         Config.debug_print("CSV saving disabled")
+    
+    return df_to_save
 
 def generate_plots(results_df, output_filename="head_angles.png"):
     """
@@ -48,7 +68,7 @@ def generate_plots(results_df, output_filename="head_angles.png"):
         
     Config.debug_print("Generating plots")
     
-    # Create plot of head angle only
+    # Create plot of head angle with smoothed version
     plt.figure(figsize=(12, 6))
 
     # Use single axis for head angle
@@ -61,8 +81,14 @@ def generate_plots(results_df, output_filename="head_angles.png"):
     # Add shaded region between -3 and 3 degrees
     ax1.axhspan(-3, 3, color='gray', alpha=0.2, label='Straight Region')
 
-    # Plot head angle
-    l1, = ax1.plot(frame_data, angle_data, 'b.-', alpha=0.7, label='Head Angle')
+    # Plot original head angle
+    l1, = ax1.plot(frame_data, angle_data, 'b.-', alpha=0.5, markersize=2, linewidth=0.8, label='Head Angle (Original)')
+    
+    # Plot smoothed head angle if available
+    if 'angle_degrees_smoothed_3frame' in results_df.columns:
+        smoothed_data = results_df['angle_degrees_smoothed_3frame'].to_numpy()
+        l2, = ax1.plot(frame_data, smoothed_data, 'r-', linewidth=2, label='Head Angle (3-Frame Smoothed)')
+    
     ax1.set_xlabel('Frame')
     ax1.set_ylabel('Head Angle (degrees)', color='b')
     ax1.tick_params(axis='y', labelcolor='b')
@@ -71,13 +97,15 @@ def generate_plots(results_df, output_filename="head_angles.png"):
     # Add legend
     ax1.legend(loc='upper right')
 
-    plt.title('Head Angle Over Time')
+    plt.title('Head Angle Over Time (Original vs Smoothed)')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(output_filename)
     plt.close()
     
     print(f"✅ Plot saved: {output_filename}")
+    if 'angle_degrees_smoothed_3frame' in results_df.columns:
+        print(f"   Plot includes both original and 3-frame smoothed angles")
 
 def create_layered_mask_video(image_dir, bottom_masks_dict, top_masks_dict, angles_df,
                            output_path, fps=10, bottom_alpha=0.5, top_alpha=0.7):

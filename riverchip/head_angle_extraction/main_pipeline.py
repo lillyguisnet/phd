@@ -48,10 +48,10 @@ def run_head_angle_extraction(input_file=None, use_parallel=True):
     # Calculate head angles
     results_df = calculate_head_angles(truncated_skeletons)
     
-    # Generate outputs
-    save_results(results_df, input_file)
-    generate_plots(results_df)
-    generate_video(head_segments, skeletons, results_df)
+    # Generate outputs - save_results now returns the DataFrame with smoothed angles
+    results_with_smoothing = save_results(results_df, input_file)
+    generate_plots(results_with_smoothing)  # Use the DataFrame with smoothed data
+    generate_video(head_segments, skeletons, results_df)  # Video can use original data
     
     print("🎉 Head angle extraction pipeline completed!")
     return results_df
