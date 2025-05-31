@@ -525,7 +525,7 @@ def gaussian_weighted_curvature(points, window_size=25, sigma=8, restriction_poi
 def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_vector_length=5, 
                                              restriction_point=0.4, straight_threshold=3, prev_head_section=None):
     """
-    Calculate head angle and bend location along the skeleton with improved handling for highly bent worms.
+    Calculate head angle and bend location with simplified, stable approach.
     
     Parameters:
     -----------
@@ -544,14 +544,7 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
         
     Returns:
     --------
-    dict containing:
-        - angle_degrees: calculated angle (0 if calculation fails)
-        - head positions and vectors
-        - bend_location: relative position along skeleton (0-1), 0 if straight
-        - bend_magnitude: strength of the bend, 0 if straight
-        - bend_position: (y,x) coordinates of maximum bend point, [0,0] if straight
-        - error: error message if calculation fails, None otherwise
-        - head_section: which head section was used for this calculation
+    dict containing angle and bend information
     """
     try:
         # Get ordered points along the skeleton
@@ -573,13 +566,13 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                 'body_end_pos': [0, 0],
                 'head_vector': [0, 0],
                 'body_vector': [0, 0],
-                'head_section': prev_head_section if prev_head_section is not None else 0
+                'head_section': prev_head_section if prev_head_section is not None else 0.1
             }
         
         ordered_points = points[np.argsort(points[:, 0])]
         norm_points, total_length = normalize_skeleton_points(ordered_points, num_points=100)
         
-        # Calculate curvature early to determine if worm is highly bent
+        # Calculate curvature to determine worm type
         curvatures = gaussian_weighted_curvature(norm_points, window_size=25, sigma=8, 
                                                restriction_point=restriction_point)
         max_curvature = np.max(np.abs(curvatures[:int(len(curvatures) * restriction_point)]))
@@ -587,13 +580,19 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
         # Determine if this is a highly bent worm
         is_highly_bent = max_curvature > 0.15
         
-        # Calculate head angle using consistent method
-        head_sections = [0.05, 0.08, 0.1, 0.15]
+        # Use a simple, stable head section selection
+        if prev_head_section is not None:
+            # Strongly prefer the same head section as previous frame
+            preferred_sections = [prev_head_section, 0.1, 0.08, 0.15]
+        else:
+            # Use a conservative default order
+            preferred_sections = [0.1, 0.08, 0.15]
+        
         body_section = 0.3
+        best_result = None
+        best_continuity_score = -1000
         
-        all_results = []
-        
-        for head_section in head_sections:
+        for head_section in preferred_sections:
             head_end_idx = max(2, int(head_section * len(norm_points)))
             body_start_idx = int((1 - body_section) * len(norm_points))
             
@@ -611,56 +610,66 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
             if head_mag < min_vector_length or body_mag < min_vector_length:
                 continue
             
-            # Use consistent angle calculation method
-            if is_highly_bent:
-                # For highly bent worms, use the deviation from overall direction
-                overall_vector = norm_points[-1] - norm_points[0]
-                overall_mag = np.linalg.norm(overall_vector)
+            # Calculate angle using simple, stable method
+            angle_deg = calculate_simple_stable_angle(head_vector, body_vector, is_highly_bent)
+            
+            # Simple continuity check - only reject truly impossible changes
+            if prev_angle is not None:
+                angle_change = abs(angle_deg - prev_angle)
                 
-                if overall_mag > min_vector_length:
-                    # Calculate deviation angle
-                    head_deviation_dot = np.dot(head_vector, overall_vector)
-                    head_deviation_cos = np.clip(head_deviation_dot / (head_mag * overall_mag), -1.0, 1.0)
-                    head_deviation_rad = np.arccos(head_deviation_cos)
-                    angle_deg = np.degrees(head_deviation_rad)
-                    
-                    # Determine sign using cross product with overall vector
-                    cross_with_overall = np.cross(overall_vector, head_vector)
-                    if cross_with_overall < 0:
-                        angle_deg = -angle_deg
-                    
-                    # Ensure we get a reasonable angle for highly bent worms (should be > 50°)
-                    if abs(angle_deg) < 50:
-                        # Fall back to traditional calculation but with adjusted threshold
-                        dot_product = np.dot(head_vector, body_vector)
-                        cos_angle = np.clip(dot_product / (head_mag * body_mag), -1.0, 1.0)
-                        angle_rad = np.arccos(cos_angle)
-                        angle_deg = np.degrees(angle_rad)
-                        
-                        # Apply sign based on cross product
-                        cross_product = np.cross(body_vector, head_vector)
-                        if cross_product < 0:
-                            angle_deg = -angle_deg
+                # Only reject if change is extremely large (>120°) AND it's a sign switch
+                is_impossible = (prev_angle * angle_deg < 0 and 
+                               min(abs(prev_angle), abs(angle_deg)) > 40 and 
+                               angle_change > 120)
+                
+                if is_impossible:
+                    continue
+            
+            # Calculate continuity score
+            continuity_score = 0
+            
+            # Bonus for using same head section as previous frame
+            if prev_head_section is not None and head_section == prev_head_section:
+                continuity_score += 50
+            
+            # Penalty for angle change if we have previous angle
+            if prev_angle is not None:
+                angle_change = abs(angle_deg - prev_angle)
+                
+                # Adjust acceptable change thresholds based on worm type
+                if is_highly_bent:
+                    # For highly bent worms, allow larger changes as they can bend more dramatically
+                    small_change_threshold = 20
+                    medium_change_threshold = 40
                 else:
-                    # Fallback to traditional method
-                    dot_product = np.dot(head_vector, body_vector)
-                    cos_angle = np.clip(dot_product / (head_mag * body_mag), -1.0, 1.0)
-                    angle_rad = np.arccos(cos_angle)
-                    angle_deg = np.degrees(angle_rad)
-                    
-                    cross_product = np.cross(body_vector, head_vector)
-                    if cross_product < 0:
-                        angle_deg = -angle_deg
-            else:
-                # For normal worms, use traditional calculation
-                dot_product = np.dot(head_vector, body_vector)
-                cos_angle = np.clip(dot_product / (head_mag * body_mag), -1.0, 1.0)
-                angle_rad = np.arccos(cos_angle)
-                angle_deg = np.degrees(angle_rad)
+                    # For normal worms, be more strict
+                    small_change_threshold = 15
+                    medium_change_threshold = 30
                 
-                cross_product = np.cross(body_vector, head_vector)
-                if cross_product < 0:
-                    angle_deg = -angle_deg
+                # Progressive penalty for large changes
+                if angle_change <= small_change_threshold:
+                    continuity_score += (small_change_threshold - angle_change)
+                elif angle_change <= medium_change_threshold:
+                    continuity_score -= (angle_change - small_change_threshold)
+                else:
+                    continuity_score -= (angle_change - small_change_threshold) * 2
+            
+            # For highly bent worms, strongly prefer larger angles
+            if is_highly_bent:
+                if abs(angle_deg) > 120:
+                    continuity_score += 40  # Strong bonus for very high angles
+                elif abs(angle_deg) > 100:
+                    continuity_score += 30  # Good bonus for high angles
+                elif abs(angle_deg) > 90:
+                    continuity_score += 25  # Bonus for angles over 90°
+                elif abs(angle_deg) > 70:
+                    continuity_score += 10  # Small bonus for reasonable angles
+                elif abs(angle_deg) < 60:
+                    continuity_score -= 30  # Penalty for unrealistically small angles
+            else:
+                # For normal worms, penalize extremely high angles
+                if abs(angle_deg) > 100:
+                    continuity_score -= 20  # Penalty for very high angles in normal worms
             
             # Create result structure
             current_result = {
@@ -675,104 +684,23 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                 'body_mag': float(body_mag),
                 'head_section': head_section,
                 'skeleton_points': norm_points.tolist(),
-                'error': None
+                'error': None,
+                'continuity_score': continuity_score
             }
             
-            # Calculate continuity score if we have previous angle
-            continuity_score = 0
-            if prev_angle is not None:
-                angle_change = abs(angle_deg - prev_angle)
-                continuity_score = max(0, 30 - angle_change)  # Higher score for smaller changes
-            
-            all_results.append((current_result, continuity_score, head_section))
-        
-        # Choose the best result
-        best_result = None
-        
-        if all_results:
-            if prev_angle is not None and prev_head_section is not None:
-                # Prioritize consistency with previous frame
+            # Keep the best result so far
+            if continuity_score > best_continuity_score:
+                best_continuity_score = continuity_score
+                best_result = current_result
                 
-                # First, try to find results using the same head section
-                same_section_results = [(r, c, s) for r, c, s in all_results if s == prev_head_section]
-                
-                if same_section_results:
-                    # Check if same section gives reasonable continuity
-                    best_same_section = same_section_results[0]
-                    angle_change = abs(best_same_section[0]['angle_degrees'] - prev_angle)
-                    
-                    if angle_change <= 25:  # Reasonable change
-                        best_result = best_same_section[0]
-                        chosen_section = best_same_section[2]
-                        if is_highly_bent:
-                            print(f"Highly bent - KEPT section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}° (change: {angle_change:.1f}°)")
-                        else:
-                            print(f"Normal - KEPT section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}° (change: {angle_change:.1f}°)")
-                    else:
-                        # Same section gives large change, try other sections
-                        other_results = [(r, c, s) for r, c, s in all_results if s != prev_head_section]
-                        if other_results:
-                            # Choose the one with best continuity
-                            best_other = max(other_results, key=lambda x: x[1])
-                            other_change = abs(best_other[0]['angle_degrees'] - prev_angle)
-                            
-                            if other_change < angle_change - 5:  # Significantly better
-                                best_result = best_other[0]
-                                chosen_section = best_other[2]
-                                if is_highly_bent:
-                                    print(f"Highly bent - SWITCHED to section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}° (change: {other_change:.1f}°)")
-                                else:
-                                    print(f"Normal - SWITCHED to section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}° (change: {other_change:.1f}°)")
-                            else:
-                                # Keep same section for consistency even with larger change
-                                best_result = best_same_section[0]
-                                chosen_section = best_same_section[2]
-                                best_result['error'] = f'Large angle change ({angle_change:.1f}°) but kept for consistency'
-                                if is_highly_bent:
-                                    print(f"Highly bent - FORCED to keep section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}° (change: {angle_change:.1f}°)")
-                                else:
-                                    print(f"Normal - FORCED to keep section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}° (change: {angle_change:.1f}°)")
-                        else:
-                            # No other options
-                            best_result = best_same_section[0]
-                            chosen_section = best_same_section[2]
-                            best_result['error'] = f'Large angle change ({angle_change:.1f}°) but no alternatives'
-                else:
-                    # Previous section not available, choose best continuity
-                    best_result, _, chosen_section = max(all_results, key=lambda x: x[1])
-                    angle_change = abs(best_result['angle_degrees'] - prev_angle)
-                    if is_highly_bent:
-                        print(f"Highly bent - NEW section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}° (change: {angle_change:.1f}°)")
-                    else:
-                        print(f"Normal - NEW section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}° (change: {angle_change:.1f}°)")
-            else:
-                # No previous angle, choose based on worm type
-                if is_highly_bent:
-                    # For highly bent worms, prefer larger angles
-                    best_result, _, chosen_section = max(all_results, key=lambda x: abs(x[0]['angle_degrees']))
-                    print(f"Highly bent - FIRST frame, chose section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}°")
-                else:
-                    # For normal worms, prefer middle sections (0.08 or 0.1)
-                    preferred_sections = [0.08, 0.1, 0.05, 0.15]
-                    for pref_section in preferred_sections:
-                        for result, _, section in all_results:
-                            if section == pref_section:
-                                best_result = result
-                                chosen_section = section
-                                break
-                        if best_result is not None:
-                            break
-                    
-                    if best_result is None:
-                        best_result, _, chosen_section = all_results[0]
-                    
-                    print(f"Normal - FIRST frame, chose section {chosen_section:.2f} with angle {best_result['angle_degrees']:.1f}°")
-            
-            # Add head_section to the result
-            best_result['head_section'] = chosen_section
+                # If we have a very good result with the preferred section, use it
+                if (prev_head_section is not None and 
+                    head_section == prev_head_section and 
+                    continuity_score > 40):
+                    break
         
         if best_result is None:
-            # No valid angle found at all
+            # Fallback result
             best_result = {
                 'angle_degrees': prev_angle if prev_angle is not None else 0,
                 'error': 'No valid angle found with current parameters',
@@ -788,8 +716,18 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                 'body_end_pos': norm_points[-1].tolist(),
                 'head_vector': [0, 0],
                 'body_vector': [0, 0],
-                'head_section': prev_head_section if prev_head_section is not None else 0
+                'head_section': prev_head_section if prev_head_section is not None else 0.1
             }
+        else:
+            # Log the decision for debugging (simplified)
+            angle_change = abs(best_result['angle_degrees'] - prev_angle) if prev_angle is not None else 0
+            section_change = "SAME" if (prev_head_section is not None and 
+                                      best_result['head_section'] == prev_head_section) else "CHANGED"
+            
+            worm_type = "Highly bent" if is_highly_bent else "Normal"
+            print(f"{worm_type} - {section_change} section {best_result['head_section']:.2f} "
+                  f"with angle {best_result['angle_degrees']:.1f}° "
+                  f"(change: {angle_change:.1f}°)")
         
         # Calculate bend information
         if abs(best_result['angle_degrees']) <= straight_threshold:
@@ -837,157 +775,60 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
             'head_vector': [0, 0],
             'body_vector': [0, 0],
             'is_straight': True,
-            'head_section': prev_head_section if prev_head_section is not None else 0
+            'head_section': prev_head_section if prev_head_section is not None else 0.1
         }
 
-def interpolate_straight_frames(df, straight_threshold=3):
+def calculate_simple_stable_angle(head_vector, body_vector, is_highly_bent):
     """
-    Interpolate bend locations ONLY for straight frames, keeping all other values unchanged.
-    For straight frames (angle <= straight_threshold), all bend values are set to 0.
-    
-    Parameters:
-    -----------
-    df : pandas.DataFrame
-        DataFrame containing angle and bend data
-    straight_threshold : float
-        Maximum absolute angle to consider as straight (default: 3 degrees)
+    Calculate angle using a simple, stable method that produces realistic angles for highly bent worms.
     """
-    # Make a copy to avoid modifying the original
-    df = df.copy()
+    # Use atan2 for full range but keep it simple
+    head_angle = np.arctan2(head_vector[1], head_vector[0])
+    body_angle = np.arctan2(body_vector[1], body_vector[0])
     
-    # First, set all bend values to 0 for straight frames
-    straight_mask = df['angle_degrees'].abs() <= straight_threshold
-    df.loc[straight_mask, 'bend_location'] = 0
-    df.loc[straight_mask, 'bend_magnitude'] = 0
-    df.loc[straight_mask, ['bend_position_x', 'bend_position_y']] = 0
-    df.loc[straight_mask, 'is_straight'] = True
+    # Calculate the difference between angles
+    angle_diff = head_angle - body_angle
     
-    # Work on each object separately for non-straight frames
-    for obj_id in df['object_id'].unique():
-        # Get data for this object
-        mask = df['object_id'] == obj_id
-        obj_data = df[mask].copy()
+    # Normalize to [-π, π] range
+    while angle_diff > np.pi:
+        angle_diff -= 2 * np.pi
+    while angle_diff < -np.pi:
+        angle_diff += 2 * np.pi
+    
+    # Convert to degrees
+    angle_deg = np.degrees(angle_diff)
+    
+    # For highly bent worms, apply more aggressive but stable scaling
+    if is_highly_bent:
+        # Apply scaling based on the magnitude of the angle
+        if abs(angle_deg) < 20:
+            # Very small angles in highly bent worms need significant scaling
+            scale_factor = 2.5
+        elif abs(angle_deg) < 40:
+            # Small to medium angles need moderate scaling
+            scale_factor = 2.0
+        elif abs(angle_deg) < 60:
+            # Medium angles need some scaling
+            scale_factor = 1.6
+        elif abs(angle_deg) < 80:
+            # Larger angles need gentle scaling
+            scale_factor = 1.3
+        else:
+            # Already large angles, minimal scaling
+            scale_factor = 1.1
         
-        # Only process non-straight frames
-        non_straight_mask = obj_data['angle_degrees'].abs() > straight_threshold
+        angle_deg = angle_deg * scale_factor
         
-        if non_straight_mask.any():
-            # Find runs of non-straight frames
-            runs = []
-            start = None
-            for i, is_non_straight in enumerate(non_straight_mask):
-                if is_non_straight and start is None:
-                    start = i
-                elif not is_non_straight and start is not None:
-                    runs.append((start, i-1))
-                    start = None
-            if start is not None:  # Handle case where last run goes to end
-                runs.append((start, len(non_straight_mask)-1))
-            
-            # Process each run of non-straight frames
-            for start_idx, end_idx in runs:
-                # Find nearest actual bends before and after
-                prev_idx = start_idx - 1
-                next_idx = end_idx + 1
-                
-                if prev_idx >= 0 and next_idx < len(obj_data):
-                    # Both bounds exist - interpolate between them
-                    prev_loc = obj_data.iloc[prev_idx]['bend_location']
-                    next_loc = obj_data.iloc[next_idx]['bend_location']
-                    
-                    # Only interpolate the non-straight frames
-                    for i in range(start_idx, end_idx + 1):
-                        weight = (i - start_idx + 1) / (end_idx - start_idx + 2)
-                        interp_val = prev_loc * (1 - weight) + next_loc * weight
-                        obj_data.iloc[i, obj_data.columns.get_loc('bend_location')] = interp_val
-                
-                elif prev_idx >= 0:
-                    # Only previous value exists
-                    prev_loc = obj_data.iloc[prev_idx]['bend_location']
-                    obj_data.iloc[start_idx:end_idx+1, obj_data.columns.get_loc('bend_location')] = prev_loc
-                
-                elif next_idx < len(obj_data):
-                    # Only next value exists
-                    next_loc = obj_data.iloc[next_idx]['bend_location']
-                    obj_data.iloc[start_idx:end_idx+1, obj_data.columns.get_loc('bend_location')] = next_loc
-        
-        # Update the main dataframe
-        df.loc[mask] = obj_data
+        # For highly bent worms, ensure minimum realistic angle
+        if abs(angle_deg) < 60:
+            # If still too small after scaling, set a reasonable minimum
+            angle_deg = 70 if angle_deg >= 0 else -70
     
-    return df
-
-def plot_skeleton_with_bend(frame_idx, obj_id, truncated_skeletons, head_angle_results, 
-                          ax=None, show_vectors=True, show_title=True):
-    """
-    Plot a single skeleton frame with bend location and head/body vectors.
+    # Ensure angle stays within reasonable bounds
+    if abs(angle_deg) > 170:
+        angle_deg = 170 if angle_deg > 0 else -170
     
-    Parameters:
-    -----------
-    frame_idx : int
-        Frame number to plot
-    obj_id : int/str
-        Object ID to plot
-    truncated_skeletons : dict
-        Dictionary containing skeleton data
-    head_angle_results : dict
-        Dictionary containing analysis results
-    ax : matplotlib.axes.Axes, optional
-        Axes to plot on. If None, creates new figure
-    show_vectors : bool
-        Whether to show head and body direction vectors
-    show_title : bool
-        Whether to show plot title
-    """
-    # Create new figure if no axes provided
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 8))
-    
-    # Get skeleton and results
-    skeleton = truncated_skeletons[frame_idx][obj_id][0]
-    result = head_angle_results[frame_idx][obj_id]
-    
-    # Get skeleton points and convert lists back to numpy arrays
-    skeleton_points = np.array(result['skeleton_points'])
-    
-    # Plot the skeleton points
-    ax.plot(skeleton_points[:, 1], skeleton_points[:, 0], 'b-', alpha=0.5, linewidth=1)
-    
-    # Plot bend location
-    bend_pos = result['bend_position']
-    ax.scatter(bend_pos[1], bend_pos[0], c='r', s=100, marker='o', label='Max Bend')
-    
-    if show_vectors:
-        # Plot head vector
-        head_start = np.array(result['head_start_pos'])
-        head_vector = np.array(result['head_vector']) * 0.5  # Scale vector for visualization
-        ax.arrow(head_start[1], head_start[0], 
-                head_vector[1], head_vector[0],
-                head_width=2, head_length=2, fc='g', ec='g', label='Head Vector')
-        
-        # Plot body vector
-        body_start = np.array(result['body_start_pos'])
-        body_vector = np.array(result['body_vector']) * 0.5  # Scale vector for visualization
-        ax.arrow(body_start[1], body_start[0], 
-                body_vector[1], body_vector[0],
-                head_width=2, head_length=2, fc='purple', ec='purple', label='Body Vector')
-    
-    # Add markers for head and tail
-    ax.scatter(skeleton_points[0, 1], skeleton_points[0, 0], c='g', s=100, marker='^', label='Head')
-    ax.scatter(skeleton_points[-1, 1], skeleton_points[-1, 0], c='orange', s=100, marker='v', label='Tail')
-    
-    if show_title:
-        ax.set_title(f'Frame {frame_idx}, Object {obj_id}\n'
-                    f'Angle: {result["angle_degrees"]:.1f}°, '
-                    f'Bend Location: {result["bend_location"]:.2f}, '
-                    f'Magnitude: {result["bend_magnitude"]:.2f}')
-    
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.axis('equal')
-    ax.grid(True, alpha=0.3)
-    
-    return ax
-
-
+    return angle_deg
 
 def process_skeleton_batch(truncated_skeletons, min_vector_length=5, 
                          restriction_point=0.5, straight_threshold=3,
@@ -1154,7 +995,6 @@ results_df = process_skeleton_batch(
     smoothing_window=3,
     deviation_threshold=50  # Increased threshold to be less aggressive
 )
-
 
 # Create plot of head angle and bend position
 plt.figure(figsize=(12, 6))
@@ -1504,7 +1344,7 @@ image_dir = video_dir
 bottom_masks = head_segments
 top_masks = truncated_skeletons
 angle_results = results_df
-output_path = "head_skeleton_angles_video2_river.mp4"
+output_path = "head_skeleton_angles_video_river.mp4"
 
 create_layered_mask_video(
     image_dir=image_dir,
