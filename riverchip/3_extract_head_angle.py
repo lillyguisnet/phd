@@ -37,6 +37,14 @@ import numpy.linalg as la
 from scipy import interpolate, ndimage
 from collections import defaultdict
 import re
+import multiprocessing as mp
+from functools import partial
+import time
+
+# Configuration flags - OPTIMIZED FOR 48-CORE MACHINE
+USE_MULTIPROCESSING = True  # Set to False if multiprocessing causes issues
+MAX_PROCESSES = 32  # Use most cores but leave some for system (48 cores available)
+CHUNK_SIZE_MULTIPLIER = 2  # Increase chunks per process for better load balancing
 
 def load_cleaned_segments_from_h5(filename):
     cleaned_segments = {}
@@ -90,25 +98,22 @@ head_segments = load_cleaned_segments_from_h5(filename)
 def get_skeleton(mask):
     return morphology.skeletonize(mask)
 
-def process_all_frames(head_segments):
+def process_frame_skeletons_parallel(frame_data_chunk):
     """
-    Process all frames to generate skeletons from masks and calculate skeleton statistics.
-
+    Process a chunk of frames to generate skeletons in parallel.
+    
     Args:
-        head_segments: Dictionary with frame indices as keys and inner dictionaries 
-                      containing object masks as values
-
+        frame_data_chunk: List of (frame_idx, frame_data) tuples
+    
     Returns:
-        Tuple containing:
-        - Dictionary with frame indices as keys and dictionaries of skeletons as values
-        - Dictionary with skeleton size statistics
+        Dictionary with frame indices as keys and dictionaries of skeletons as values
     """
-    skeletons = {}
-    skeleton_sizes = []
-
-    for frame_idx, frame_data in head_segments.items():
+    chunk_skeletons = {}
+    chunk_sizes = []
+    
+    for frame_idx, frame_data in frame_data_chunk:
         frame_skeletons = {}
-
+        
         for obj_id, mask in frame_data.items():
             # Generate skeleton from mask
             skeleton = get_skeleton(mask)
@@ -116,122 +121,106 @@ def process_all_frames(head_segments):
             
             # Track skeleton size (number of pixels)
             size = np.sum(skeleton)
-            skeleton_sizes.append(size)
+            chunk_sizes.append(size)
+        
+        chunk_skeletons[frame_idx] = frame_skeletons
+    
+    return chunk_skeletons, chunk_sizes
 
-        skeletons[frame_idx] = frame_skeletons
-
-        if frame_idx % 100 == 0:  # Progress update every 100 frames
-            print(f"Processed frame {frame_idx}")
-
+def process_all_frames_parallel(head_segments, num_processes=None):
+    """
+    Process all frames to generate skeletons using parallel processing.
+    
+    Args:
+        head_segments: Dictionary with frame indices as keys and inner dictionaries 
+                      containing object masks as values
+        num_processes: Number of processes to use (default: CPU count)
+    
+    Returns:
+        Tuple containing:
+        - Dictionary with frame indices as keys and dictionaries of skeletons as values
+        - Dictionary with skeleton size statistics
+    """
+    if num_processes is None:
+        num_processes = min(mp.cpu_count(), MAX_PROCESSES)
+    
+    print(f"🚀 Using {num_processes} processes for skeleton generation on {mp.cpu_count()}-core machine...")
+    
+    # Convert to list of (frame_idx, frame_data) tuples
+    frame_list = list(head_segments.items())
+    print(f"Processing {len(frame_list)} frames...")
+    
+    # Optimize chunk sizing for better load balancing on many cores
+    # Use smaller chunks so work is distributed more evenly
+    optimal_chunk_size = max(1, len(frame_list) // (num_processes * CHUNK_SIZE_MULTIPLIER))
+    chunks = [frame_list[i:i + optimal_chunk_size] for i in range(0, len(frame_list), optimal_chunk_size)]
+    
+    print(f"📦 Split into {len(chunks)} chunks of ~{optimal_chunk_size} frames each for optimal load balancing")
+    
+    # Process chunks in parallel
+    try:
+        with mp.Pool(processes=num_processes) as pool:
+            print("⚡ Starting parallel skeleton generation...")
+            results = pool.map(process_frame_skeletons_parallel, chunks)
+            print("✅ Skeleton generation completed!")
+    except Exception as e:
+        print(f"❌ Error in parallel processing: {e}")
+        # Fallback to sequential processing
+        print("🔄 Falling back to sequential processing...")
+        results = [process_frame_skeletons_parallel(chunk) for chunk in chunks]
+    
+    # Combine results
+    skeletons = {}
+    all_skeleton_sizes = []
+    
+    for chunk_skeletons, chunk_sizes in results:
+        skeletons.update(chunk_skeletons)
+        all_skeleton_sizes.extend(chunk_sizes)
+    
     # Calculate statistics
     stats = {
-        'min_size': np.min(skeleton_sizes),
-        'max_size': np.max(skeleton_sizes), 
-        'mean_size': np.mean(skeleton_sizes),
-        'median_size': np.median(skeleton_sizes),
-        'std_size': np.std(skeleton_sizes)
+        'min_size': np.min(all_skeleton_sizes),
+        'max_size': np.max(all_skeleton_sizes), 
+        'mean_size': np.mean(all_skeleton_sizes),
+        'median_size': np.median(all_skeleton_sizes),
+        'std_size': np.std(all_skeleton_sizes)
     }
-
-    print("\nSkeleton Statistics:")
+    
+    print("\n📊 Skeleton Statistics:")
     print(f"Minimum size: {stats['min_size']:.1f} pixels")
     print(f"Maximum size: {stats['max_size']:.1f} pixels") 
     print(f"Mean size: {stats['mean_size']:.1f} pixels")
     print(f"Median size: {stats['median_size']:.1f} pixels")
     print(f"Standard deviation: {stats['std_size']:.1f} pixels")
-
+    
     return skeletons, stats
 
-skeletons, skeleton_stats = process_all_frames(head_segments)
+print(f"🏁 Starting head angle extraction on {mp.cpu_count()}-core machine...")
+start_time = time.time()
+
+skeletons, skeleton_stats = process_all_frames_parallel(head_segments, num_processes=MAX_PROCESSES if USE_MULTIPROCESSING else 1)
+
+skeleton_time = time.time()
+print(f"⏱️  Skeleton generation took {skeleton_time - start_time:.2f} seconds")
 
 
 
 ###Truncate skeletons
-def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150, adaptive_mode=False, skeleton_stats=None):
+def truncate_skeleton_chunk(chunk_data):
     """
-    Keeps only the top specified number of pixels of skeletons in a dictionary.
+    Truncate skeletons for a chunk of frames in parallel.
     
     Args:
-        skeleton_dict: Dictionary with frame indices as keys and inner dictionaries 
-                      containing skeletons as values of shape (1, h, w)
-        keep_pixels: Number of pixels to keep from the top (default 150), ignored if adaptive_mode=True
-        adaptive_mode: If True, use 10% less than the smallest skeleton height
-        skeleton_stats: Dictionary containing skeleton statistics (required if adaptive_mode=True)
+        chunk_data: Tuple of (frame_data_chunk, keep_pixels, adaptive_mode, skeleton_stats)
     
     Returns:
-        Dictionary with truncated skeletons
+        Dictionary with truncated skeletons for the chunk
     """
-    truncated_skeletons = {}
+    frame_data_chunk, keep_pixels, adaptive_mode, skeleton_stats = chunk_data
     
-    # Calculate adaptive keep_pixels if requested
-    if adaptive_mode:
-        if skeleton_stats is None:
-            raise ValueError("skeleton_stats must be provided when adaptive_mode=True")
-        
-        # Use 90% of the minimum skeleton pixel count from skeleton_stats
-        min_pixel_count = skeleton_stats['min_size']
-        target_pixel_count = int(min_pixel_count * 0.9)  # 10% less than smallest
-        
-        print(f"Adaptive mode: Target pixel count = {target_pixel_count} (90% of smallest skeleton: {min_pixel_count} pixels)")
-        
-        # Find the truncation point that achieves approximately this pixel count
-        # We'll use a binary search approach to find the right cutoff height
-        def find_truncation_height_for_target_pixels(skeleton_dict, target_pixels):
-            """Find the height that results in closest to target pixel count"""
-            # Sample a few skeletons to estimate the relationship
-            sample_results = []
-            sample_count = 0
-            max_samples = 20  # Limit sampling for efficiency
-            
-            for frame_idx, frame_data in skeleton_dict.items():
-                if sample_count >= max_samples:
-                    break
-                for obj_id, skeleton in frame_data.items():
-                    if sample_count >= max_samples:
-                        break
-                    
-                    skeleton_2d = skeleton[0]
-                    points = np.where(skeleton_2d)
-                    if len(points[0]) == 0:
-                        continue
-                    
-                    y_min = np.min(points[0])
-                    y_max = np.max(points[0])
-                    total_height = y_max - y_min
-                    total_pixels = np.sum(skeleton_2d)
-                    
-                    # Try different truncation heights and see resulting pixel counts
-                    for frac in [0.3, 0.5, 0.7, 0.9]:
-                        truncate_height = int(total_height * frac)
-                        cutoff_point = y_min + truncate_height
-                        
-                        # Create temporary truncated version
-                        temp_skeleton = skeleton_2d.copy()
-                        temp_skeleton[cutoff_point:, :] = False
-                        truncated_pixels = np.sum(temp_skeleton)
-                        
-                        sample_results.append((truncate_height, truncated_pixels, total_height, total_pixels))
-                    
-                    sample_count += 1
-            
-            if not sample_results:
-                return 150  # Fallback default
-            
-            # Find the truncation height that gets us closest to target
-            best_height = 150
-            best_diff = float('inf')
-            
-            for height, pixels, total_h, total_p in sample_results:
-                diff = abs(pixels - target_pixels)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_height = height
-            
-            return best_height
-        
-        keep_pixels = find_truncation_height_for_target_pixels(skeleton_dict, target_pixel_count)
-        print(f"Adaptive mode: Using truncation height of {keep_pixels} pixels to achieve ~{target_pixel_count} skeleton pixels")
+    truncated_chunk = {}
     
-    for frame_idx, frame_data in skeleton_dict.items():
+    for frame_idx, frame_data in frame_data_chunk:
         frame_truncated = {}
         
         for obj_id, skeleton in frame_data.items():
@@ -256,34 +245,92 @@ def truncate_skeleton_fixed(skeleton_dict, keep_pixels=150, adaptive_mode=False,
             truncated = skeleton.copy()
             truncated[0, cutoff_point:, :] = False  # Using False since it's boolean type
             
-            # Verify the truncation
-            new_points = np.where(truncated[0])
-            if len(new_points[0]) > 0:
-                new_height = np.max(new_points[0]) - np.min(new_points[0])
-            else:
-                new_height = 0
-            
-            print(f"Frame {frame_idx}, Object {obj_id}:")
-            print(f"Original height: {original_height}")
-            print(f"New height: {new_height}")
-            print(f"Top point: {y_min}")
-            print(f"Cutoff point: {cutoff_point}")
-            if adaptive_mode:
-                print(f"Adaptive keep_pixels: {keep_pixels}")
-            print("------------------------")
-            
             frame_truncated[obj_id] = truncated
             
-        truncated_skeletons[frame_idx] = frame_truncated
+        truncated_chunk[frame_idx] = frame_truncated
     
+    return truncated_chunk
+
+def truncate_skeleton_fixed_parallel(skeleton_dict, keep_pixels=150, adaptive_mode=False, skeleton_stats=None, num_processes=None):
+    """
+    Keeps only the top specified number of pixels of skeletons using parallel processing.
+    
+    Args:
+        skeleton_dict: Dictionary with frame indices as keys and inner dictionaries 
+                      containing skeletons as values of shape (1, h, w)
+        keep_pixels: Number of pixels to keep from the top (default 150), ignored if adaptive_mode=True
+        adaptive_mode: If True, use 10% less than the smallest skeleton height
+        skeleton_stats: Dictionary containing skeleton statistics (required if adaptive_mode=True)
+        num_processes: Number of processes to use (default: CPU count)
+    
+    Returns:
+        Dictionary with truncated skeletons
+    """
+    if num_processes is None:
+        num_processes = min(mp.cpu_count(), MAX_PROCESSES)
+    
+    # Calculate adaptive keep_pixels if requested
+    if adaptive_mode:
+        if skeleton_stats is None:
+            raise ValueError("skeleton_stats must be provided when adaptive_mode=True")
+        
+        # Use 90% of the minimum skeleton pixel count from skeleton_stats
+        min_pixel_count = skeleton_stats['min_size']
+        target_pixel_count = int(min_pixel_count * 0.9)  # 10% less than smallest
+        
+        print(f"🎯 Adaptive mode: Target pixel count = {target_pixel_count} (90% of smallest skeleton: {min_pixel_count} pixels)")
+        
+        # For simplicity in parallel processing, use a fixed height based on average
+        # This is an approximation but much faster than the complex search
+        keep_pixels = int(skeleton_stats['mean_size'] * 0.6)  # Rough estimate
+        print(f"📏 Adaptive mode: Using truncation height of {keep_pixels} pixels")
+    
+    print(f"🚀 Using {num_processes} processes for skeleton truncation on {mp.cpu_count()}-core machine...")
+    
+    # Convert to list of (frame_idx, frame_data) tuples
+    frame_list = list(skeleton_dict.items())
+    print(f"Truncating {len(frame_list)} frames...")
+    
+    # Optimize chunk sizing for better load balancing on many cores
+    optimal_chunk_size = max(1, len(frame_list) // (num_processes * CHUNK_SIZE_MULTIPLIER))
+    chunks = [frame_list[i:i + optimal_chunk_size] for i in range(0, len(frame_list), optimal_chunk_size)]
+    
+    print(f"📦 Split into {len(chunks)} chunks of ~{optimal_chunk_size} frames each for optimal load balancing")
+    
+    # Prepare chunk data with parameters
+    chunk_data_list = [(chunk, keep_pixels, adaptive_mode, skeleton_stats) for chunk in chunks]
+    
+    # Process chunks in parallel
+    try:
+        with mp.Pool(processes=num_processes) as pool:
+            print("⚡ Starting parallel skeleton truncation...")
+            results = pool.map(truncate_skeleton_chunk, chunk_data_list)
+            print("✅ Skeleton truncation completed!")
+    except Exception as e:
+        print(f"❌ Error in parallel processing: {e}")
+        # Fallback to sequential processing
+        print("🔄 Falling back to sequential processing...")
+        results = [truncate_skeleton_chunk(chunk_data) for chunk_data in chunk_data_list]
+    
+    # Combine results
+    truncated_skeletons = {}
+    for chunk_result in results:
+        truncated_skeletons.update(chunk_result)
+    
+    print(f"🎉 Truncation complete! Processed {len(truncated_skeletons)} frames using {num_processes} cores.")
     return truncated_skeletons
 
-# Now use it on your skeletons dictionary with adaptive mode option
-# Option 1: Use fixed pixels (original behavior)
+# Now use conservative truncation that keeps ~90% of skeleton for better angle measurements
+# Option 1: Use fixed pixels (original behavior) - DEPRECATED
 # truncated_skeletons = truncate_skeleton_fixed(skeletons, keep_pixels=400) #200
 
-# Option 2: Use adaptive mode (10% less than smallest skeleton)
-truncated_skeletons = truncate_skeleton_fixed(skeletons, adaptive_mode=True, skeleton_stats=skeleton_stats)
+# Option 2: Use adaptive mode (10% less than smallest skeleton) - DEPRECATED, too aggressive
+
+# Option 3: Use conservative truncation that only removes noise at extremities
+truncation_start = time.time()
+truncated_skeletons = conservative_truncate_skeleton_parallel(skeletons, tail_trim_pixels=50, num_processes=MAX_PROCESSES if USE_MULTIPROCESSING else 1)
+truncation_time = time.time()
+print(f"⏱️  Conservative skeleton truncation took {truncation_time - truncation_start:.2f} seconds")
 
 
 
@@ -523,9 +570,10 @@ def gaussian_weighted_curvature(points, window_size=25, sigma=8, restriction_poi
     return full_curvatures
 
 def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_vector_length=5, 
-                                             restriction_point=0.4, straight_threshold=3, prev_head_section=None):
+                                             restriction_point=0.4, straight_threshold=3, prev_head_section=None,
+                                             prev_was_highly_bent=None):
     """
-    Calculate head angle and bend location with simplified, stable approach.
+    Calculate head angle and bend location with improved highly bent detection and context awareness.
     
     Parameters:
     -----------
@@ -541,6 +589,8 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
         Angle threshold (in degrees) below which the skeleton is considered straight
     prev_head_section : float, optional
         Previous frame's head section for consistency
+    prev_was_highly_bent : bool, optional
+        Whether the previous frame was classified as highly bent
         
     Returns:
     --------
@@ -566,7 +616,8 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                 'body_end_pos': [0, 0],
                 'head_vector': [0, 0],
                 'body_vector': [0, 0],
-                'head_section': prev_head_section if prev_head_section is not None else 0.1
+                'head_section': prev_head_section if prev_head_section is not None else 0.1,
+                'is_highly_bent': False
             }
         
         ordered_points = points[np.argsort(points[:, 0])]
@@ -577,33 +628,46 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                                                restriction_point=restriction_point)
         max_curvature = np.max(np.abs(curvatures[:int(len(curvatures) * restriction_point)]))
         
-        # Determine if this is a highly bent worm
-        is_highly_bent = max_curvature > 0.15
+        # Improved highly bent detection with context awareness
+        is_highly_bent_by_curvature = max_curvature > 0.15
         
-        # Use a more consistent head section selection for highly bent worms
+        # Context-aware detection: if previous frame was highly bent and current angle suggests high bending
+        context_suggests_highly_bent = False
+        if prev_was_highly_bent and prev_angle is not None:
+            # If previous frame was highly bent and had a large angle, current frame likely is too
+            if abs(prev_angle) > 80:
+                context_suggests_highly_bent = True
+        
+        # Combined detection with bias toward highly bent when in doubt
+        is_highly_bent = is_highly_bent_by_curvature or context_suggests_highly_bent
+        
+        # Additional check: if we get a very small angle but context suggests high bending,
+        # we'll do a secondary check after initial calculation
+        
+        # Use longer head sections now that we have longer skeletons
         if is_highly_bent:
             # For highly bent worms, be much more conservative about section changes
             if prev_head_section is not None:
                 # Strongly prefer the same section, only try alternatives if absolutely necessary
                 preferred_sections = [prev_head_section]
                 # Only add alternatives if the previous section might be problematic
-                if prev_head_section == 0.08:
-                    preferred_sections.extend([0.10])  # Only try one alternative
-                elif prev_head_section == 0.10:
-                    preferred_sections.extend([0.08])  # Only try one alternative
-                else:  # prev_head_section == 0.15
-                    preferred_sections.extend([0.10])  # Only try one alternative
+                if prev_head_section == 0.15:
+                    preferred_sections.extend([0.20])  # Try longer sections
+                elif prev_head_section == 0.20:
+                    preferred_sections.extend([0.15])  # Try shorter if needed
+                else:  # prev_head_section == 0.25
+                    preferred_sections.extend([0.20])  # Try shorter
             else:
-                # For first frame of highly bent worm, prefer 0.10 as it's most stable
-                preferred_sections = [0.10, 0.08]
+                # For first frame of highly bent worm, prefer longer sections for better measurement
+                preferred_sections = [0.20, 0.15, 0.25]
         else:
-            # For normal worms, use the original logic
+            # For normal worms, use longer sections for better accuracy
             if prev_head_section is not None:
-                preferred_sections = [prev_head_section, 0.1, 0.08, 0.15]
+                preferred_sections = [prev_head_section, 0.15, 0.20, 0.25]
             else:
-                preferred_sections = [0.1, 0.08, 0.15]
+                preferred_sections = [0.15, 0.20, 0.25]
         
-        body_section = 0.3
+        body_section = 0.4  # Use longer body section too
         best_result = None
         best_continuity_score = -1000
         
@@ -627,6 +691,14 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
             
             # Calculate angle using simple, stable method
             angle_deg = calculate_simple_stable_angle(head_vector, body_vector, is_highly_bent)
+            
+            # CRITICAL FIX: Context-aware angle validation
+            # If we're in a highly bent context but got a small angle, this might be wrong
+            if (context_suggests_highly_bent and abs(angle_deg) < 70 and 
+                prev_angle is not None and abs(prev_angle) > 90):
+                # Force recalculation as highly bent
+                angle_deg = calculate_simple_stable_angle(head_vector, body_vector, True)
+                is_highly_bent = True  # Override the classification
             
             # Simple continuity check - only reject truly impossible changes
             if prev_angle is not None:
@@ -694,6 +766,10 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                 if abs(angle_deg) > 100:
                     continuity_score -= 20  # Penalty for very high angles in normal worms
             
+            # CONTEXT BONUS: If this maintains consistency with highly bent sequence
+            if context_suggests_highly_bent and abs(angle_deg) > 90:
+                continuity_score += 50  # Strong bonus for maintaining bent sequence
+            
             # Create result structure
             current_result = {
                 'angle_degrees': float(angle_deg),
@@ -708,7 +784,8 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                 'head_section': head_section,
                 'skeleton_points': norm_points.tolist(),
                 'error': None,
-                'continuity_score': continuity_score
+                'continuity_score': continuity_score,
+                'is_highly_bent': is_highly_bent
             }
             
             # Keep the best result so far
@@ -739,7 +816,8 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
                 'body_end_pos': norm_points[-1].tolist(),
                 'head_vector': [0, 0],
                 'body_vector': [0, 0],
-                'head_section': prev_head_section if prev_head_section is not None else 0.1
+                'head_section': prev_head_section if prev_head_section is not None else 0.1,
+                'is_highly_bent': is_highly_bent
             }
         else:
             # Log the decision for debugging (simplified)
@@ -747,8 +825,9 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
             section_change = "SAME" if (prev_head_section is not None and 
                                       best_result['head_section'] == prev_head_section) else "CHANGED"
             
-            worm_type = "Highly bent" if is_highly_bent else "Normal"
-            print(f"{worm_type} - {section_change} section {best_result['head_section']:.2f} "
+            worm_type = "Highly bent" if best_result['is_highly_bent'] else "Normal"
+            context_info = " (context)" if context_suggests_highly_bent and not is_highly_bent_by_curvature else ""
+            print(f"{worm_type}{context_info} - {section_change} section {best_result['head_section']:.2f} "
                   f"with angle {best_result['angle_degrees']:.1f}° "
                   f"(change: {angle_change:.1f}°)")
         
@@ -798,7 +877,8 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
             'head_vector': [0, 0],
             'body_vector': [0, 0],
             'is_straight': True,
-            'head_section': prev_head_section if prev_head_section is not None else 0.1
+            'head_section': prev_head_section if prev_head_section is not None else 0.1,
+            'is_highly_bent': False
         }
 
 def calculate_simple_stable_angle(head_vector, body_vector, is_highly_bent):
@@ -821,15 +901,14 @@ def calculate_simple_stable_angle(head_vector, body_vector, is_highly_bent):
     # Convert to degrees
     angle_deg = np.degrees(angle_diff)
     
-    # For highly bent worms, we need much more aggressive scaling
+    # For highly bent worms, apply much more conservative scaling since we have longer vectors
     if is_highly_bent:
         base_angle = abs(angle_deg)
         
         # Check if we might need the supplementary angle for very bent worms
-        # If the calculated angle is small but the worm is highly bent, 
-        # it might be that we're getting the acute angle when we need the obtuse one
-        if base_angle < 90:
-            # For highly bent worms with small calculated angles, 
+        # Only for very small angles that seem unrealistic
+        if base_angle < 60:
+            # For highly bent worms with very small calculated angles, 
             # consider using the supplementary angle
             supplementary_angle = 180 - base_angle
             
@@ -838,21 +917,21 @@ def calculate_simple_stable_angle(head_vector, body_vector, is_highly_bent):
                 angle_deg = supplementary_angle if angle_deg >= 0 else -supplementary_angle
                 base_angle = supplementary_angle
         
-        # Apply additional scaling for highly bent worms
-        if base_angle < 100:
-            # Even after supplementary check, if angle is still < 100°, scale it up
-            if base_angle < 60:
-                scale_factor = 1.8  # Strong scaling for very small angles
-            elif base_angle < 80:
-                scale_factor = 1.4  # Moderate scaling
+        # Apply much lighter scaling since we have longer, more accurate vectors
+        if base_angle < 80:
+            # Much more conservative scaling
+            if base_angle < 40:
+                scale_factor = 1.3  # Light scaling for very small angles
+            elif base_angle < 60:
+                scale_factor = 1.15  # Very light scaling
             else:
-                scale_factor = 1.2  # Light scaling
+                scale_factor = 1.05  # Minimal scaling
             
             angle_deg = angle_deg * scale_factor
         
-        # Ensure minimum realistic angle for highly bent worms
-        if abs(angle_deg) < 85:
-            angle_deg = 95 if angle_deg >= 0 else -95
+        # Set a more reasonable minimum for highly bent worms
+        if abs(angle_deg) < 70:
+            angle_deg = 75 if angle_deg >= 0 else -75
     
     # Ensure angle stays within reasonable bounds
     if abs(angle_deg) > 170:
@@ -892,6 +971,7 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
     frame_results = {}
     prev_angles_by_object = {}
     prev_head_sections_by_object = {}
+    prev_highly_bent_by_object = {}  # Track highly bent state for each object
     
     # Process frames in order
     for frame_idx in sorted(truncated_skeletons.keys()):
@@ -901,9 +981,10 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
         for obj_id, skeleton_data in frame_data.items():
             skeleton = skeleton_data[0]
             
-            # Get previous angle and head section for this object
+            # Get previous angle, head section, and highly bent state for this object
             prev_angle = prev_angles_by_object.get(obj_id, None)
             prev_head_section = prev_head_sections_by_object.get(obj_id, None)
+            prev_was_highly_bent = prev_highly_bent_by_object.get(obj_id, None)
             
             result = calculate_head_angle_with_positions_and_bend(
                 skeleton,
@@ -911,16 +992,18 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
                 min_vector_length=min_vector_length,
                 restriction_point=restriction_point,
                 straight_threshold=straight_threshold,
-                prev_head_section=prev_head_section
+                prev_head_section=prev_head_section,
+                prev_was_highly_bent=prev_was_highly_bent
             )
             
             # Store result
             frame_results[frame_idx][obj_id] = result
             
-            # Update previous angle and head section if calculation was successful
+            # Update previous values if calculation was successful
             if result['error'] is None or 'Large angle change' in result.get('error', ''):
                 prev_angles_by_object[obj_id] = result['angle_degrees']
                 prev_head_sections_by_object[obj_id] = result.get('head_section', None)
+                prev_highly_bent_by_object[obj_id] = result.get('is_highly_bent', False)
             
             # Add to initial_data
             initial_data.append({
@@ -934,7 +1017,8 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
                 'head_mag': result['head_mag'],
                 'body_mag': result['body_mag'],
                 'is_straight': result.get('is_straight', abs(result['angle_degrees']) <= straight_threshold),
-                'error': result.get('error', None)
+                'error': result.get('error', None),
+                'is_highly_bent': result.get('is_highly_bent', False)
             })
     
     # Convert to DataFrame
@@ -1017,6 +1101,7 @@ def process_skeleton_batch(truncated_skeletons, min_vector_length=5,
     return final_df
 
 # Process all skeletons with integrated smoothing and bend recalculation
+angle_start = time.time()
 results_df = process_skeleton_batch(
     truncated_skeletons,
     min_vector_length=5,
@@ -1025,6 +1110,8 @@ results_df = process_skeleton_batch(
     smoothing_window=3,
     deviation_threshold=50  # Increased threshold to be less aggressive
 )
+angle_time = time.time()
+print(f"⏱️  Angle calculation took {angle_time - angle_start:.2f} seconds")
 
 # Create plot of head angle and bend position
 plt.figure(figsize=(12, 6))
@@ -1046,7 +1133,7 @@ l1, = ax1.plot(frame_data, angle_data, 'b.-', alpha=0.7, label='Head Angle')
 ax1.set_xlabel('Frame')
 ax1.set_ylabel('Head Angle (degrees)', color='b')
 ax1.tick_params(axis='y', labelcolor='b')
-ax1.set_ylim(-150, 150)  # Set y-axis limits for head angle
+ax1.set_ylim(-180, 180)  # Set y-axis limits for head angle
 
 # Plot bend position on right y-axis
 l2, = ax2.plot(frame_data, bend_data, 'r.-', alpha=0.7, label='Bend Position Y')
@@ -1375,7 +1462,7 @@ bottom_masks = head_segments
 top_masks = truncated_skeletons
 angle_results = results_df
 output_path = "head_skeleton_angles_video_river.mp4"
-""" 
+
 create_layered_mask_video(
     image_dir=image_dir,
     bottom_masks_dict=bottom_masks,
@@ -1385,4 +1472,122 @@ create_layered_mask_video(
     fps=10,
     bottom_alpha=0.3,
     top_alpha=0.7
-) """
+)
+
+print("\n" + "="*60)
+print("🎉 HEAD ANGLE EXTRACTION COMPLETED SUCCESSFULLY! 🎉")
+print("="*60)
+total_time = time.time() - start_time
+print(f"⏱️  TOTAL EXECUTION TIME: {total_time:.2f} seconds")
+print(f"🚀 Used {MAX_PROCESSES if USE_MULTIPROCESSING else 1} cores out of {mp.cpu_count()} available")
+print(f"📊 Processing rate: {len(results_df)/total_time:.1f} frames/second")
+print(f"✅ Processed {len(results_df)} angle measurements")
+print(f"✅ Generated plot: head_angles_and_bends_new_river.png")
+print(f"✅ Results saved in results_df DataFrame")
+print("="*60)
+print("🏆 PERFORMANCE SUMMARY:")
+print(f"   Skeleton generation: {skeleton_time - start_time:.2f}s ({(skeleton_time - start_time)/total_time*100:.1f}%)")
+print(f"   Skeleton truncation: {truncation_time - truncation_start:.2f}s ({(truncation_time - truncation_start)/total_time*100:.1f}%)")
+print(f"   Angle calculation:   {angle_time - angle_start:.2f}s ({(angle_time - angle_start)/total_time*100:.1f}%)")
+print("="*60)
+print("Script execution finished!")
+print("="*60)
+
+def conservative_truncate_skeleton_chunk(chunk_data):
+    """
+    Conservatively truncate skeletons for a chunk of frames, only removing noise at extremities.
+    
+    Args:
+        chunk_data: Tuple of (frame_data_chunk, tail_trim_pixels)
+    
+    Returns:
+        Dictionary with conservatively truncated skeletons for the chunk
+    """
+    frame_data_chunk, tail_trim_pixels = chunk_data
+    
+    truncated_chunk = {}
+    
+    for frame_idx, frame_data in frame_data_chunk:
+        frame_truncated = {}
+        
+        for obj_id, skeleton in frame_data.items():
+            # Get the 2D array from the 3D input (taking the first channel)
+            skeleton_2d = skeleton[0]
+            
+            # Find all non-zero points
+            points = np.where(skeleton_2d)
+            if len(points[0]) == 0:  # Empty skeleton
+                frame_truncated[obj_id] = skeleton
+                continue
+            
+            # Get the top point and bottom point
+            y_min = np.min(points[0])
+            y_max = np.max(points[0])
+            original_height = y_max - y_min
+            
+            # Only trim a small amount from the tail (bottom) to remove noise
+            # Keep at least 90% of the original skeleton
+            max_trim = min(tail_trim_pixels, int(original_height * 0.1))
+            cutoff_point = y_max - max_trim
+            
+            # Create conservatively truncated skeleton
+            truncated = skeleton.copy()
+            truncated[0, cutoff_point:, :] = False  # Using False since it's boolean type
+            
+            frame_truncated[obj_id] = truncated
+            
+        truncated_chunk[frame_idx] = frame_truncated
+    
+    return truncated_chunk
+
+def conservative_truncate_skeleton_parallel(skeleton_dict, tail_trim_pixels=50, num_processes=None):
+    """
+    Conservatively truncate skeletons using parallel processing, only removing noise at extremities.
+    
+    Args:
+        skeleton_dict: Dictionary with frame indices as keys and inner dictionaries 
+                      containing skeletons as values of shape (1, h, w)
+        tail_trim_pixels: Maximum number of pixels to trim from tail (default 50)
+        num_processes: Number of processes to use (default: CPU count)
+    
+    Returns:
+        Dictionary with conservatively truncated skeletons
+    """
+    if num_processes is None:
+        num_processes = min(mp.cpu_count(), MAX_PROCESSES)
+    
+    print(f"🎯 Conservative truncation: Maximum tail trim = {tail_trim_pixels} pixels (keeping ~90% of skeleton)")
+    print(f"🚀 Using {num_processes} processes for conservative skeleton truncation on {mp.cpu_count()}-core machine...")
+    
+    # Convert to list of (frame_idx, frame_data) tuples
+    frame_list = list(skeleton_dict.items())
+    print(f"Conservatively truncating {len(frame_list)} frames...")
+    
+    # Optimize chunk sizing for better load balancing on many cores
+    optimal_chunk_size = max(1, len(frame_list) // (num_processes * CHUNK_SIZE_MULTIPLIER))
+    chunks = [frame_list[i:i + optimal_chunk_size] for i in range(0, len(frame_list), optimal_chunk_size)]
+    
+    print(f"📦 Split into {len(chunks)} chunks of ~{optimal_chunk_size} frames each for optimal load balancing")
+    
+    # Prepare chunk data with parameters
+    chunk_data_list = [(chunk, tail_trim_pixels) for chunk in chunks]
+    
+    # Process chunks in parallel
+    try:
+        with mp.Pool(processes=num_processes) as pool:
+            print("⚡ Starting parallel conservative skeleton truncation...")
+            results = pool.map(conservative_truncate_skeleton_chunk, chunk_data_list)
+            print("✅ Conservative skeleton truncation completed!")
+    except Exception as e:
+        print(f"❌ Error in parallel processing: {e}")
+        # Fallback to sequential processing
+        print("🔄 Falling back to sequential processing...")
+        results = [conservative_truncate_skeleton_chunk(chunk_data) for chunk_data in chunk_data_list]
+    
+    # Combine results
+    truncated_skeletons = {}
+    for chunk_result in results:
+        truncated_skeletons.update(chunk_result)
+    
+    print(f"🎉 Conservative truncation complete! Processed {len(truncated_skeletons)} frames using {num_processes} cores.")
+    return truncated_skeletons
