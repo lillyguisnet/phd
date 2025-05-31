@@ -15,8 +15,8 @@ class Config:
     
     # Debug and Output Control Flags
     DEBUG_MODE = True
-    SAVE_CSV = False  # Skip CSV saving for debugging
-    GENERATE_VIDEO = False  # Skip video generation for debugging
+    SAVE_CSV = True  # Enable CSV saving for data persistence
+    GENERATE_VIDEO = True  # Enable video generation
     GENERATE_PLOTS = True  # Keep basic plots for visualization
     VERBOSE_TIMING = True  # Show detailed timing information
     
