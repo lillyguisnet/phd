@@ -580,13 +580,28 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
         # Determine if this is a highly bent worm
         is_highly_bent = max_curvature > 0.15
         
-        # Use a simple, stable head section selection
-        if prev_head_section is not None:
-            # Strongly prefer the same head section as previous frame
-            preferred_sections = [prev_head_section, 0.1, 0.08, 0.15]
+        # Use a more consistent head section selection for highly bent worms
+        if is_highly_bent:
+            # For highly bent worms, be much more conservative about section changes
+            if prev_head_section is not None:
+                # Strongly prefer the same section, only try alternatives if absolutely necessary
+                preferred_sections = [prev_head_section]
+                # Only add alternatives if the previous section might be problematic
+                if prev_head_section == 0.08:
+                    preferred_sections.extend([0.10])  # Only try one alternative
+                elif prev_head_section == 0.10:
+                    preferred_sections.extend([0.08])  # Only try one alternative
+                else:  # prev_head_section == 0.15
+                    preferred_sections.extend([0.10])  # Only try one alternative
+            else:
+                # For first frame of highly bent worm, prefer 0.10 as it's most stable
+                preferred_sections = [0.10, 0.08]
         else:
-            # Use a conservative default order
-            preferred_sections = [0.1, 0.08, 0.15]
+            # For normal worms, use the original logic
+            if prev_head_section is not None:
+                preferred_sections = [prev_head_section, 0.1, 0.08, 0.15]
+            else:
+                preferred_sections = [0.1, 0.08, 0.15]
         
         body_section = 0.3
         best_result = None
@@ -630,7 +645,15 @@ def calculate_head_angle_with_positions_and_bend(skeleton, prev_angle=None, min_
             
             # Bonus for using same head section as previous frame
             if prev_head_section is not None and head_section == prev_head_section:
-                continuity_score += 50
+                if is_highly_bent:
+                    continuity_score += 100  # Much stronger bonus for highly bent worms
+                else:
+                    continuity_score += 50   # Normal bonus for regular worms
+            elif prev_head_section is not None and head_section != prev_head_section:
+                if is_highly_bent:
+                    continuity_score -= 80   # Strong penalty for section changes in highly bent worms
+                else:
+                    continuity_score -= 20   # Moderate penalty for normal worms
             
             # Penalty for angle change if we have previous angle
             if prev_angle is not None:
@@ -798,31 +821,38 @@ def calculate_simple_stable_angle(head_vector, body_vector, is_highly_bent):
     # Convert to degrees
     angle_deg = np.degrees(angle_diff)
     
-    # For highly bent worms, apply more aggressive but stable scaling
+    # For highly bent worms, we need much more aggressive scaling
     if is_highly_bent:
-        # Apply scaling based on the magnitude of the angle
-        if abs(angle_deg) < 20:
-            # Very small angles in highly bent worms need significant scaling
-            scale_factor = 2.5
-        elif abs(angle_deg) < 40:
-            # Small to medium angles need moderate scaling
-            scale_factor = 2.0
-        elif abs(angle_deg) < 60:
-            # Medium angles need some scaling
-            scale_factor = 1.6
-        elif abs(angle_deg) < 80:
-            # Larger angles need gentle scaling
-            scale_factor = 1.3
-        else:
-            # Already large angles, minimal scaling
-            scale_factor = 1.1
+        base_angle = abs(angle_deg)
         
-        angle_deg = angle_deg * scale_factor
+        # Check if we might need the supplementary angle for very bent worms
+        # If the calculated angle is small but the worm is highly bent, 
+        # it might be that we're getting the acute angle when we need the obtuse one
+        if base_angle < 90:
+            # For highly bent worms with small calculated angles, 
+            # consider using the supplementary angle
+            supplementary_angle = 180 - base_angle
+            
+            # Use the supplementary angle if it's more realistic for a highly bent worm
+            if supplementary_angle > 90:
+                angle_deg = supplementary_angle if angle_deg >= 0 else -supplementary_angle
+                base_angle = supplementary_angle
         
-        # For highly bent worms, ensure minimum realistic angle
-        if abs(angle_deg) < 60:
-            # If still too small after scaling, set a reasonable minimum
-            angle_deg = 70 if angle_deg >= 0 else -70
+        # Apply additional scaling for highly bent worms
+        if base_angle < 100:
+            # Even after supplementary check, if angle is still < 100°, scale it up
+            if base_angle < 60:
+                scale_factor = 1.8  # Strong scaling for very small angles
+            elif base_angle < 80:
+                scale_factor = 1.4  # Moderate scaling
+            else:
+                scale_factor = 1.2  # Light scaling
+            
+            angle_deg = angle_deg * scale_factor
+        
+        # Ensure minimum realistic angle for highly bent worms
+        if abs(angle_deg) < 85:
+            angle_deg = 95 if angle_deg >= 0 else -95
     
     # Ensure angle stays within reasonable bounds
     if abs(angle_deg) > 170:
@@ -1108,7 +1138,7 @@ def save_head_angles_with_side_correction(filename, results_df, final_data_dir):
         
     return merged_df
 
-merged_df = save_head_angles_with_side_correction(filename, results_df, final_data_dir)
+#merged_df = save_head_angles_with_side_correction(filename, results_df, final_data_dir)
 
 
 
@@ -1345,7 +1375,7 @@ bottom_masks = head_segments
 top_masks = truncated_skeletons
 angle_results = results_df
 output_path = "head_skeleton_angles_video_river.mp4"
-
+""" 
 create_layered_mask_video(
     image_dir=image_dir,
     bottom_masks_dict=bottom_masks,
@@ -1355,4 +1385,4 @@ create_layered_mask_video(
     fps=10,
     bottom_alpha=0.3,
     top_alpha=0.7
-)
+) """
