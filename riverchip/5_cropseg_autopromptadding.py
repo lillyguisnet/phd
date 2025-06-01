@@ -652,14 +652,14 @@ def get_random_unprocessed_video(crop_videos_dir, segmented_videos_dir):
     return os.path.join(crop_videos_dir, random.choice(unprocessed_videos))
 
 ##Get random video to process
-crop_videos_dir = '/home/lilly/phd/ria/data_foranalysis/AG_WT/riacrop/'
-segmented_videos_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/ria_segmentation/'
+crop_videos_dir = '/home/lilly/phd/riverchip/data_foranalysis/riacrop'
+segmented_videos_dir = '/home/lilly/phd/riverchip/data_analyzed/ria_segmentation'
 video_dir = get_random_unprocessed_video(crop_videos_dir, segmented_videos_dir)
 print(f"Processing video: {video_dir}")
 
 video_name = video_dir.split('/')[-1]
-prompt_dir = os.path.join('/home/lilly/phd/ria/', f'promptframes_{video_name}')
-prompt_data_path = os.path.join("/home/lilly/phd/ria", f'promptdata_{video_name}.json')
+prompt_dir = os.path.join('/home/lilly/phd/riverchip/', f'promptframes_{video_name}')
+prompt_data_path = os.path.join("/home/lilly/phd/riverchip/promptdata", f'promptdata_{video_name}.json')
 
 
 #region [add or modify 1st prompt]
@@ -691,7 +691,7 @@ prompts = {}
 ann_frame_idx = frame_to_prompt  #frame index
 ann_obj_id = 2  #object id
 #points = np.array([[277, 307]], dtype=np.float32) #full frame
-points = np.array([[55, 85]], dtype=np.float32) #cropped frame nrd only
+points = np.array([[27, 10]], dtype=np.float32) #cropped frame nrd only
 labels = np.array([1], np.int32)
 prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -716,7 +716,7 @@ plt.close()
 #NRV
 ann_frame_idx = frame_to_prompt  # the frame index we interact with
 ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[87, 40]], dtype=np.float32) #cropped frame nrv only
+points = np.array([[78, 43]], dtype=np.float32) #cropped frame nrv only
 # for labels, `1` means positive click and `0` means negative click
 labels = np.array([1], np.int32)
 prompts[ann_obj_id] = points, labels
@@ -888,7 +888,7 @@ for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
 # Check results
 analyze_and_print_results(video_segments)
 
-overlay_predictions_on_frame(video_dir, 470, video_segments, alpha=0.99)
+overlay_predictions_on_frame(video_dir, 506, video_segments, alpha=0.99)
 
 #Make video with masks
 create_mask_overlay_video(
@@ -903,7 +903,7 @@ create_mask_overlay_video(
 # Remove prompt frames from the video directory
 remove_prompt_frames_from_video(video_dir, frame_mapping)
 
-output_dir = '/home/lilly/phd/ria/data_analyzed/AG_WT/ria_segmentation'
+output_dir = segmented_videos_dir
 filtered_video_segments = save_video_segments_to_h5(video_segments, video_dir, output_dir, frame_mapping)
 
 
@@ -918,10 +918,10 @@ prompt_data["1"]
 
 # region [find prompts]
 new_prompts = {}
-new_prompt_frame = 234  #frame index
+new_prompt_frame = 505  #frame index
 #NRD
 ann_obj_id = 2  #object id
-points = np.array([[14, 77]], dtype=np.float32) #cropped frame nrd only
+points = np.array([[43, 23]], dtype=np.float32) #cropped frame nrd only
 labels = np.array([1], np.int32)
 new_prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -945,14 +945,9 @@ plt.close()
 
 #NRV
 ann_obj_id = 3  # give a unique id to each object we interact with (it can be any integers)
-points = np.array([[71, 64],
-                   [50, 45],
-                   [75, 65],
-                   [35, 85],
-                   [76, 63],
-                   [74, 65]], dtype=np.float32) #cropped frame nrv only
+points = np.array([[80, 60]], dtype=np.float32) #cropped frame nrv only
 # for labels, `1` means positive click and `0` means negative click
-labels = np.array([1, 0, 0, 0, 0, 0], np.int32)
+labels = np.array([1], np.int32)
 new_prompts[ann_obj_id] = points, labels
 # `add_new_points` returns masks for all objects added so far on this interacted frame
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(
