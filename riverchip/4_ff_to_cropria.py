@@ -312,8 +312,8 @@ def apply_transformation_to_image_simple(image, dx, dy, dtheta, mask_centroid):
     
     return transformed_image
 
-def process_frames_with_mask_alignment_correct(input_folder, output_folder, video_segments, original_size, crop_size):
-    """Process frames with mask-based alignment - CORRECTLY handling mask cropping."""
+def process_frames_with_mask_alignment_robust(input_folder, output_folder, video_segments, original_size, crop_size):
+    """Process frames with mask-based alignment - ROBUST version with temporal smoothing."""
     frame_files = sorted([f for f in os.listdir(input_folder) if f.endswith('.jpg')])
     
     if not frame_files:
@@ -345,7 +345,7 @@ def process_frames_with_mask_alignment_correct(input_folder, output_folder, vide
     ref_center_x = (ref_x_coords.min() + ref_x_coords.max()) // 2
     ref_center_y = (ref_y_coords.min() + ref_y_coords.max()) // 2
     
-    # Define FINAL crop boundaries (where we want the aligned object to be)
+    # Define FINAL crop boundaries
     final_left = max(0, ref_center_x - crop_size // 2)
     final_top = max(0, ref_center_y - crop_size // 2)
     final_right = min(original_size[1], final_left + crop_size)
@@ -358,7 +358,7 @@ def process_frames_with_mask_alignment_correct(input_folder, output_folder, vide
     
     print(f"Final crop region: ({final_left}, {final_top}) to ({final_right}, {final_bottom})")
     
-    # Use FULL masks for alignment calculations (no cropping!)
+    # Use FULL masks for alignment calculations
     ref_centroid, ref_theta, _ = compute_mask_centroid_and_orientation(reference_mask)
     
     if ref_centroid is None:
@@ -367,44 +367,85 @@ def process_frames_with_mask_alignment_correct(input_folder, output_folder, vide
     
     print(f"Reference centroid (full image): {ref_centroid}")
     
-    # Process each frame
-    for idx, frame_file in enumerate(tqdm(frame_files, desc="Processing frames")):
-        # Read the frame
-        frame = cv2.imread(os.path.join(input_folder, frame_file))
-        
-        # Get FULL mask for this frame (no cropping for alignment calculation!)
+    # STEP 1: Calculate all transformations first
+    transformations = []
+    valid_indices = []
+    
+    for idx, frame_file in enumerate(frame_files):
         frame_idx = idx
         if frame_idx in video_segments and video_segments[frame_idx]:
             current_mask_full = next(iter(video_segments[frame_idx].values()))[0]
             
-            # Calculate alignment using FULL masks
             if current_mask_full.sum() > 100:  # Valid mask
                 current_centroid, current_theta, _ = compute_mask_centroid_and_orientation(current_mask_full)
                 
                 if current_centroid is not None:
-                    # Calculate transformation needed (in full image coordinates)
+                    # Calculate raw transformation
                     dx = ref_centroid[0] - current_centroid[0]
                     dy = ref_centroid[1] - current_centroid[1]
                     dtheta = ref_theta - current_theta
                     dtheta = np.arctan2(np.sin(dtheta), np.cos(dtheta))
                     
-                    # Limit transformations to reasonable values
-                    dx = np.clip(dx, -50, 50)  # Allow larger movements
-                    dy = np.clip(dy, -50, 50)
-                    dtheta = np.clip(dtheta, -np.pi/6, np.pi/6)
-                    
-                    # Apply inverse transformation to the full image
-                    aligned_frame = apply_transformation_to_image_simple(frame, -dx, -dy, -dtheta, current_centroid)
-                    
-                    print(f"Frame {idx}: dx={dx:.1f}, dy={dy:.1f}, rot={np.degrees(dtheta):.1f}°")
-                else:
-                    aligned_frame = frame
-            else:
-                aligned_frame = frame
+                    transformations.append((dx, dy, dtheta, current_centroid))
+                    valid_indices.append(idx)
+                    continue
+        
+        # Invalid frame - use previous valid transformation or zero
+        if transformations:
+            transformations.append(transformations[-1])  # Repeat last valid
+        else:
+            transformations.append((0, 0, 0, ref_centroid))
+        valid_indices.append(idx)
+    
+    # STEP 2: Detect and filter outliers
+    if len(transformations) > 0:
+        dx_values = np.array([t[0] for t in transformations])
+        dy_values = np.array([t[1] for t in transformations])
+        dtheta_values = np.array([t[2] for t in transformations])
+        
+        # Remove outliers using IQR method
+        def filter_outliers(values, factor=1.5):
+            q75, q25 = np.percentile(values, [75, 25])
+            iqr = q75 - q25
+            lower_bound = q25 - factor * iqr
+            upper_bound = q75 + factor * iqr
+            return np.clip(values, lower_bound, upper_bound)
+        
+        dx_filtered = filter_outliers(dx_values)
+        dy_filtered = filter_outliers(dy_values)
+        dtheta_filtered = filter_outliers(dtheta_values)
+        
+        # STEP 3: Apply temporal smoothing (moving average)
+        window_size = 5  # Smooth over 5 frames
+        dx_smooth = np.convolve(dx_filtered, np.ones(window_size)/window_size, mode='same')
+        dy_smooth = np.convolve(dy_filtered, np.ones(window_size)/window_size, mode='same')
+        dtheta_smooth = np.convolve(dtheta_filtered, np.ones(window_size)/window_size, mode='same')
+        
+        # Update transformations with smoothed values
+        for i in range(len(transformations)):
+            transformations[i] = (dx_smooth[i], dy_smooth[i], dtheta_smooth[i], transformations[i][3])
+    
+    # STEP 4: Apply transformations and crop
+    for idx, frame_file in enumerate(tqdm(frame_files, desc="Processing frames")):
+        # Read the frame
+        frame = cv2.imread(os.path.join(input_folder, frame_file))
+        
+        # Get smoothed transformation
+        dx, dy, dtheta, mask_centroid = transformations[idx]
+        
+        # Apply additional safety clipping
+        dx = np.clip(dx, -80, 80)
+        dy = np.clip(dy, -80, 80)
+        dtheta = np.clip(dtheta, -np.pi/4, np.pi/4)
+        
+        # Apply inverse transformation
+        if abs(dx) > 0.1 or abs(dy) > 0.1 or abs(dtheta) > 0.01:  # Only transform if needed
+            aligned_frame = apply_transformation_to_image_simple(frame, -dx, -dy, -dtheta, mask_centroid)
+            print(f"Frame {idx}: dx={dx:.1f}, dy={dy:.1f}, rot={np.degrees(dtheta):.1f}° (smoothed)")
         else:
             aligned_frame = frame
         
-        # NOW crop the aligned frame to the final region
+        # Crop the aligned frame
         final_crop = aligned_frame[final_top:final_bottom, final_left:final_right]
         
         # Ensure exact crop size
@@ -415,7 +456,7 @@ def process_frames_with_mask_alignment_correct(input_folder, output_folder, vide
         output_path = os.path.join(output_folder, frame_file)
         cv2.imwrite(output_path, final_crop)
     
-    print(f"Aligned and cropped frames saved to: {output_folder}")
+    print(f"Robust aligned and cropped frames saved to: {output_folder}")
     return len(frame_files), (crop_size, crop_size)
 
 def create_mask_overlay_video(input_folder, video_segments, output_video_path, fps=10):
@@ -593,6 +634,6 @@ create_alignment_comparison_video(random_video_dir, video_segments, original_siz
 
 # Also run the mask-based alignment
 print("Processing frames with mask alignment...")
-process_frames_with_mask_alignment_correct(random_video_dir, output_folder, video_segments, original_size, 110)
+process_frames_with_mask_alignment_robust(random_video_dir, output_folder, video_segments, original_size, 110)
 
 
