@@ -16,7 +16,7 @@ class Config:
     # Debug and Output Control Flags
     DEBUG_MODE = True
     SAVE_CSV = True  # Enable CSV saving for data persistence
-    GENERATE_VIDEO = True  # Enable video generation
+    GENERATE_VIDEO = False  # Disable video generation to save time
     GENERATE_PLOTS = True  # Keep basic plots for visualization
     VERBOSE_TIMING = True  # Show detailed timing information
     
@@ -24,6 +24,7 @@ class Config:
     HEAD_SEGMENTATION_DIR = "/home/lilly/phd/riverchip/data_analyzed/head_segmentation"
     FINAL_DATA_DIR = "/home/lilly/phd/riverchip/data_analyzed/final_data"
     OUTPUT_DIR = "/home/lilly/phd/riverchip/data_analyzed/final_data"  # Where to save CSV files
+    PLOTS_DIR = "/home/lilly/phd/riverchip/data_analyzed/plots"  # Where to save plot files
     VIDEO_DIR = "/home/lilly/phd/riverchip/data_foranalysis/videotojpg/data_original-hannah"
     
     # Algorithm Parameters

@@ -50,13 +50,13 @@ def save_results(results_df, filename):
     
     return df_to_save
 
-def generate_plots(results_df, output_filename="head_angles.png"):
+def generate_plots(results_df, input_filename=None):
     """
     Generate plots of head angles if enabled.
     
     Args:
         results_df: DataFrame with results
-        output_filename: Name of the output plot file
+        input_filename: Original input filename for creating unique plot names
     """
     if not Config.should_generate_plots():
         Config.debug_print("Plot generation disabled")
@@ -66,7 +66,22 @@ def generate_plots(results_df, output_filename="head_angles.png"):
         print("⚠️  No data to plot")
         return
         
-    Config.debug_print("Generating plots")
+    # Extract video name for plot title and filename
+    if input_filename:
+        # Extract base name from input filename for uniqueness
+        base_name = os.path.splitext(os.path.basename(input_filename))[0]
+        # Remove '_headsegmentation' suffix if present
+        video_name = base_name.replace('_headsegmentation', '')
+    else:
+        video_name = "unknown_video"
+    
+    # Create plots directory if it doesn't exist
+    os.makedirs(Config.PLOTS_DIR, exist_ok=True)
+    
+    # Create unique output filename
+    output_filename = os.path.join(Config.PLOTS_DIR, f"{video_name}_head_angles.png")
+        
+    Config.debug_print(f"Generating plots for {video_name}")
     
     # Create plot of head angle with smoothed version
     plt.figure(figsize=(12, 6))
@@ -97,10 +112,10 @@ def generate_plots(results_df, output_filename="head_angles.png"):
     # Add legend
     ax1.legend(loc='upper right')
 
-    plt.title('Head Angle Over Time (Original vs Smoothed)')
+    plt.title(f'Head Angle Over Time - {video_name}')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig(output_filename)
+    plt.savefig(output_filename, dpi=150, bbox_inches='tight')
     plt.close()
     
     print(f"✅ Plot saved: {output_filename}")

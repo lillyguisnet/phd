@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("/home/maxime/prg/phd/segment-anything-2")
+sys.path.append("/home/lilly/phd/segment-anything-2")
 from PIL import Image
 import matplotlib.pyplot as plt
 import numpy as np
@@ -39,87 +39,158 @@ def show_points(coords, labels, ax, marker_size=200):
     ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)   
 
 
-def fullframe_segmentation_withcommonprompt(video_dir):
-    sam2_checkpoint = "./segment-anything-2/checkpoints/sam2_hiera_large.pt"
-    model_cfg = "sam2_hiera_l.yaml"
+video_dir = "/home/lilly/phd/crawlingtracking/data_foranalysis/food/food-a-02252022134507-0000"
 
-    predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
+sam2_checkpoint = "./segment-anything-2/checkpoints/sam2_hiera_large.pt"
+model_cfg = "sam2_hiera_l.yaml"
+predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
+prompt_path = "/home/lilly/phd/crawlingtracking/000600.jpg"
+# Extract the filename from the source path
+filename = os.path.basename(prompt_path)
 
-    prompt_path = "/home/maxime/prg/phd/crawlingtracking/000600.jpg"
-    # Extract the filename from the source path
-    filename = os.path.basename(prompt_path)
+# Create the full destination path
+destination_path = os.path.join(video_dir, filename)
+
+# Copy the image to the destination folder
+shutil.copy2(prompt_path, destination_path)
+
+# Replace this comment with your image processing code
+print(f"Processing video_dir: {video_dir}")
+frame_names = [
+    p for p in os.listdir(video_dir)
+    if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
+]
+frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+inference_state = predictor.init_state(video_path=video_dir)
+
+ann_frame_idx = 600
+ann_obj_id = 1
+points = np.array([[1317, 1481]], dtype=np.float32) #full frame common prompt
+labels = np.array([1], np.int32)
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+show_mask((out_mask_logits[0] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_ids[0])
+plt.savefig("promptclick.png")
+plt.close()
+
+# run propagation throughout the video and collect the results in a dict
+video_segments = {}  # video_segments contains the per-frame segmentation results
+for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=ann_frame_idx, reverse=True):
+    video_segments[out_frame_idx] = {
+        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+        for i, out_obj_id in enumerate(out_obj_ids)
+    }
+
+def create_overlay_video(video_segments, video_dir, frame_names, output_path, mask_color=(0, 255, 0), alpha=0.5, fps=30):
+    """
+    Create an overlay video with segmentation masks overlaid on the original frames.
     
-    # Create the full destination path
-    destination_path = os.path.join(video_dir, filename)
+    Args:
+        video_segments: Dictionary containing segmentation masks for each frame
+        video_dir: Directory containing the original video frames
+        frame_names: List of frame filenames sorted by frame number
+        output_path: Path where the output video will be saved
+        mask_color: RGB color for the mask overlay (default: green)
+        alpha: Transparency of the mask overlay (0.0 to 1.0)
+        fps: Frames per second for the output video
+    """
+    # Get sorted frame indices that have masks
+    sorted_frames = sorted(video_segments.keys())
     
-    # Copy the image to the destination folder
-    shutil.copy2(prompt_path, destination_path)
+    if not sorted_frames:
+        print("No frames with masks found in video_segments")
+        return
     
-    # Replace this comment with your image processing code
-    print(f"Processing video_dir: {video_dir}")
-
-    frame_names = [
-        p for p in os.listdir(video_dir)
-        if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
-    ]
-    frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
-
-    inference_state = predictor.init_state(video_path=video_dir)
-
-    ann_frame_idx = 600
-    ann_obj_id = 1
-    points = np.array([[1317, 1481]], dtype=np.float32) #full frame common prompt
-    labels = np.array([1], np.int32)
-    _, out_obj_ids, out_mask_logits = predictor.add_new_points(
-        inference_state=inference_state,
-        frame_idx=ann_frame_idx,
-        obj_id=ann_obj_id,
-        points=points,
-        labels=labels,
-    )
-
-    plt.figure(figsize=(12, 8))
-    plt.title(f"frame {ann_frame_idx}")
-    plt.imshow(Image.open(os.path.join(video_dir, frame_names[ann_frame_idx])))
-    show_points(points, labels, plt.gca())
-    show_mask((out_mask_logits[0] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_ids[0])
-    plt.savefig("promptclick.png")
-    plt.close()
-
-    # run propagation throughout the video and collect the results in a dict
-    video_segments = {}  # video_segments contains the per-frame segmentation results
-    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
-        video_segments[out_frame_idx] = {
-            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-            for i, out_obj_id in enumerate(out_obj_ids)
-        }
-
-    #Save segmentation dict
-    save_dir = "/home/maxime/prg/phd/crawlingtracking/final_data/fullframe_segmentations/"
-    save_name = save_dir + os.path.basename(os.path.normpath(video_dir)) + ".h5"
-
-    # Convert the dictionary to a single large numpy array
-    frames = sorted(video_segments.keys())
-    all_masks = np.array([list(video_segments[frame].values())[0].astype(np.uint8) for frame in frames])
-
-    with h5py.File(save_name, 'w') as f:
-        # Create a single large dataset
-        f.create_dataset('masks', data=all_masks, compression="gzip", compression_opts=9)
-
-        # Save frame numbers as a separate dataset for reference
-        f.create_dataset('frame_numbers', data=np.array(frames))
+    # Read the first frame to get video dimensions
+    first_frame_path = os.path.join(video_dir, frame_names[sorted_frames[0]])
+    first_frame = cv2.imread(first_frame_path)
+    if first_frame is None:
+        print(f"Could not read first frame: {first_frame_path}")
+        return
     
-    if not os.path.exists(save_name):
-        raise IOError(f"File {save_name} was not created successfully.")
-    else:
-        print(f"Successfully saved {save_name}")
-
-    # Delete the copied image after processing
-    os.remove(destination_path)
+    height, width = first_frame.shape[:2]
     
-    print(f"Successfully processed and deleted {filename}")
+    # Initialize video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    print(f"Creating overlay video with {len(sorted_frames)} frames...")
+    
+    for frame_idx in tqdm(sorted_frames, desc="Creating overlay video"):
+        # Read the original frame
+        frame_path = os.path.join(video_dir, frame_names[frame_idx])
+        frame = cv2.imread(frame_path)
+        
+        if frame is None:
+            print(f"Warning: Could not read frame {frame_path}")
+            continue
+        
+        # Get the mask for this frame (assuming single object with obj_id=1)
+        if ann_obj_id in video_segments[frame_idx]:
+            mask = video_segments[frame_idx][ann_obj_id]
+            
+            # Ensure mask is 2D and matches frame dimensions
+            if len(mask.shape) > 2:
+                mask = mask.squeeze()
+            
+            # Resize mask if it doesn't match frame dimensions
+            if mask.shape != (height, width):
+                mask = cv2.resize(mask.astype(np.uint8), (width, height), interpolation=cv2.INTER_NEAREST)
+                mask = mask.astype(bool)
+            
+            # Create colored overlay
+            overlay = frame.copy()
+            overlay[mask] = mask_color
+            
+            # Blend the overlay with the original frame
+            frame_with_overlay = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
+        else:
+            # No mask for this frame, use original frame
+            frame_with_overlay = frame
+        
+        # Write frame to video
+        out.write(frame_with_overlay)
+    
+    # Release video writer
+    out.release()
+    print(f"Overlay video saved to: {output_path}")
+
+# Create overlay video
+overlay_video_path = os.path.join(os.path.dirname(video_dir), f"{os.path.basename(video_dir)}_overlay.mp4")
+create_overlay_video(video_segments, video_dir, frame_names, overlay_video_path)
 
 
-video_dir = "/home/maxime/prg/phd/crawlingtracking/data_foranalysis/food/food-a-02252022132222-0000"
 
-fullframe_segmentation_withcommonprompt(video_dir)
+
+
+#Save segmentation dict
+save_dir = "/home/maxime/prg/phd/crawlingtracking/final_data/fullframe_segmentations/"
+save_name = save_dir + os.path.basename(os.path.normpath(video_dir)) + ".h5"
+# Convert the dictionary to a single large numpy array
+frames = sorted(video_segments.keys())
+all_masks = np.array([list(video_segments[frame].values())[0].astype(np.uint8) for frame in frames])
+with h5py.File(save_name, 'w') as f:
+    # Create a single large dataset
+    f.create_dataset('masks', data=all_masks, compression="gzip", compression_opts=9)
+    # Save frame numbers as a separate dataset for reference
+    f.create_dataset('frame_numbers', data=np.array(frames))
+
+if not os.path.exists(save_name):
+    raise IOError(f"File {save_name} was not created successfully.")
+else:
+    print(f"Successfully saved {save_name}")
+# Delete the copied image after processing
+os.remove(destination_path)
+
+
+

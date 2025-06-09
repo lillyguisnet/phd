@@ -79,8 +79,8 @@ frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 inference_state = predictor.init_state(video_path=random_video_dir)
 
 
-points=np.array([[560, 700]], dtype=np.float32) #RIA region
-labels=np.array([1], np.int32)
+points=np.array([[500, 620], [490, 550]], dtype=np.float32) #RIA region
+labels=np.array([1, 0], np.int32)
 
 prompts = {}
 ann_frame_idx = len(frame_names) - 1 # Use the last frame
@@ -312,8 +312,8 @@ def apply_transformation_to_image_simple(image, dx, dy, dtheta, mask_centroid):
     
     return transformed_image
 
-def process_frames_with_mask_alignment_robust(input_folder, output_folder, video_segments, original_size, crop_size):
-    """Process frames with mask-based alignment - ROBUST version with temporal smoothing."""
+def process_frames_with_mask_alignment_simple(input_folder, output_folder, video_segments, original_size, crop_size):
+    """Process frames with mask-based alignment - SIMPLE version for debugging."""
     frame_files = sorted([f for f in os.listdir(input_folder) if f.endswith('.jpg')])
     
     if not frame_files:
@@ -340,110 +340,63 @@ def process_frames_with_mask_alignment_robust(input_folder, output_folder, video
     
     print(f"Using frame {reference_frame_idx} as reference for alignment")
     
-    # Calculate final crop window based on reference mask
-    ref_y_coords, ref_x_coords = np.where(reference_mask)
-    ref_center_x = (ref_x_coords.min() + ref_x_coords.max()) // 2
-    ref_center_y = (ref_y_coords.min() + ref_y_coords.max()) // 2
-    
-    # Define FINAL crop boundaries
-    final_left = max(0, ref_center_x - crop_size // 2)
-    final_top = max(0, ref_center_y - crop_size // 2)
-    final_right = min(original_size[1], final_left + crop_size)
-    final_bottom = min(original_size[0], final_top + crop_size)
-    
-    if final_right == original_size[1]:
-        final_left = final_right - crop_size
-    if final_bottom == original_size[0]:
-        final_top = final_bottom - crop_size
-    
-    print(f"Final crop region: ({final_left}, {final_top}) to ({final_right}, {final_bottom})")
-    
-    # Use FULL masks for alignment calculations
+    # Calculate reference centroid
     ref_centroid, ref_theta, _ = compute_mask_centroid_and_orientation(reference_mask)
     
     if ref_centroid is None:
         print("Warning: Invalid reference mask.")
         return process_frames_fixed_crop(input_folder, output_folder, video_segments, original_size, crop_size)
     
-    print(f"Reference centroid (full image): {ref_centroid}")
+    print(f"Reference centroid: {ref_centroid}")
     
-    # STEP 1: Calculate all transformations first
-    transformations = []
-    valid_indices = []
-    
-    for idx, frame_file in enumerate(frame_files):
-        frame_idx = idx
-        if frame_idx in video_segments and video_segments[frame_idx]:
-            current_mask_full = next(iter(video_segments[frame_idx].values()))[0]
-            
-            if current_mask_full.sum() > 100:  # Valid mask
-                current_centroid, current_theta, _ = compute_mask_centroid_and_orientation(current_mask_full)
-                
-                if current_centroid is not None:
-                    # Calculate raw transformation
-                    dx = ref_centroid[0] - current_centroid[0]
-                    dy = ref_centroid[1] - current_centroid[1]
-                    dtheta = ref_theta - current_theta
-                    dtheta = np.arctan2(np.sin(dtheta), np.cos(dtheta))
-                    
-                    transformations.append((dx, dy, dtheta, current_centroid))
-                    valid_indices.append(idx)
-                    continue
-        
-        # Invalid frame - use previous valid transformation or zero
-        if transformations:
-            transformations.append(transformations[-1])  # Repeat last valid
-        else:
-            transformations.append((0, 0, 0, ref_centroid))
-        valid_indices.append(idx)
-    
-    # STEP 2: Detect and filter outliers
-    if len(transformations) > 0:
-        dx_values = np.array([t[0] for t in transformations])
-        dy_values = np.array([t[1] for t in transformations])
-        dtheta_values = np.array([t[2] for t in transformations])
-        
-        # Remove outliers using IQR method
-        def filter_outliers(values, factor=1.5):
-            q75, q25 = np.percentile(values, [75, 25])
-            iqr = q75 - q25
-            lower_bound = q25 - factor * iqr
-            upper_bound = q75 + factor * iqr
-            return np.clip(values, lower_bound, upper_bound)
-        
-        dx_filtered = filter_outliers(dx_values)
-        dy_filtered = filter_outliers(dy_values)
-        dtheta_filtered = filter_outliers(dtheta_values)
-        
-        # STEP 3: Apply temporal smoothing (moving average)
-        window_size = 5  # Smooth over 5 frames
-        dx_smooth = np.convolve(dx_filtered, np.ones(window_size)/window_size, mode='same')
-        dy_smooth = np.convolve(dy_filtered, np.ones(window_size)/window_size, mode='same')
-        dtheta_smooth = np.convolve(dtheta_filtered, np.ones(window_size)/window_size, mode='same')
-        
-        # Update transformations with smoothed values
-        for i in range(len(transformations)):
-            transformations[i] = (dx_smooth[i], dy_smooth[i], dtheta_smooth[i], transformations[i][3])
-    
-    # STEP 4: Apply transformations and crop
+    # Process each frame individually
     for idx, frame_file in enumerate(tqdm(frame_files, desc="Processing frames")):
         # Read the frame
         frame = cv2.imread(os.path.join(input_folder, frame_file))
         
-        # Get smoothed transformation
-        dx, dy, dtheta, mask_centroid = transformations[idx]
+        # Calculate transformation for this frame
+        dx, dy, dtheta = 0, 0, 0
+        if idx in video_segments and video_segments[idx]:
+            current_mask = next(iter(video_segments[idx].values()))[0]
+            
+            if current_mask.sum() > 100:  # Valid mask
+                current_centroid, current_theta, _ = compute_mask_centroid_and_orientation(current_mask)
+                
+                if current_centroid is not None:
+                    # Calculate transformation needed to align current to reference
+                    dx = ref_centroid[0] - current_centroid[0]
+                    dy = ref_centroid[1] - current_centroid[1] 
+                    dtheta = ref_theta - current_theta
+                    dtheta = np.arctan2(np.sin(dtheta), np.cos(dtheta))
+                    
+                    # Apply minimal clipping - only extreme outliers
+                    dx = np.clip(dx, -50, 50)
+                    dy = np.clip(dy, -50, 50)
+                    dtheta = np.clip(dtheta, -np.pi/8, np.pi/8)  # Max 22.5 degrees
+                    
+                    print(f"Frame {idx}: dx={dx:.1f}, dy={dy:.1f}, rot={np.degrees(dtheta):.1f}°")
         
-        # Apply additional safety clipping
-        dx = np.clip(dx, -80, 80)
-        dy = np.clip(dy, -80, 80)
-        dtheta = np.clip(dtheta, -np.pi/4, np.pi/4)
-        
-        # Apply inverse transformation
-        if abs(dx) > 0.1 or abs(dy) > 0.1 or abs(dtheta) > 0.01:  # Only transform if needed
-            aligned_frame = apply_transformation_to_image_simple(frame, -dx, -dy, -dtheta, mask_centroid)
-            print(f"Frame {idx}: dx={dx:.1f}, dy={dy:.1f}, rot={np.degrees(dtheta):.1f}° (smoothed)")
+        # Apply transformation if needed
+        if abs(dx) > 0.5 or abs(dy) > 0.5 or abs(dtheta) > 0.01:
+            aligned_frame = apply_transformation_to_image_simple(frame, -dx, -dy, -dtheta, ref_centroid)
         else:
             aligned_frame = frame
+        
+        # Calculate crop window centered on reference centroid
+        crop_center_x = int(ref_centroid[0])
+        crop_center_y = int(ref_centroid[1])
+        
+        # Calculate crop boundaries
+        final_left = max(0, crop_center_x - crop_size // 2)
+        final_top = max(0, crop_center_y - crop_size // 2)
+        final_right = min(original_size[1], final_left + crop_size)
+        final_bottom = min(original_size[0], final_top + crop_size)
+        
+        # Adjust if out of bounds
+        if final_right == original_size[1]:
+            final_left = final_right - crop_size
+        if final_bottom == original_size[0]:
+            final_top = final_bottom - crop_size
         
         # Crop the aligned frame
         final_crop = aligned_frame[final_top:final_bottom, final_left:final_right]
@@ -456,7 +409,7 @@ def process_frames_with_mask_alignment_robust(input_folder, output_folder, video
         output_path = os.path.join(output_folder, frame_file)
         cv2.imwrite(output_path, final_crop)
     
-    print(f"Robust aligned and cropped frames saved to: {output_folder}")
+    print(f"Simple aligned and cropped frames saved to: {output_folder}")
     return len(frame_files), (crop_size, crop_size)
 
 def create_mask_overlay_video(input_folder, video_segments, output_video_path, fps=10):
@@ -534,24 +487,31 @@ def create_alignment_comparison_video(input_folder, video_segments, original_siz
         print("No valid reference mask found for comparison video.")
         return
     
-    # Calculate crop window based on reference mask
+    # Calculate reference center position
     ref_y_coords, ref_x_coords = np.where(reference_mask)
     ref_center_x = (ref_x_coords.min() + ref_x_coords.max()) // 2
     ref_center_y = (ref_y_coords.min() + ref_y_coords.max()) // 2
     
-    # Calculate transformations for all frames
+    # Calculate transformations for all frames (similar to main function)
+    ref_centroid, ref_theta, _ = compute_mask_centroid_and_orientation(reference_mask)
+    
     transformations = {}
     for frame_idx in sorted(video_segments.keys()):
         if frame_idx in video_segments and video_segments[frame_idx]:
             current_mask = next(iter(video_segments[frame_idx].values()))[0]
             if current_mask.sum() > 100:
-                dx, dy, dtheta, mask_centroid = align_mask_to_reference_simple(reference_mask, current_mask)
-                transformations[frame_idx] = (dx, dy, dtheta, mask_centroid)
+                current_centroid, current_theta, _ = compute_mask_centroid_and_orientation(current_mask)
+                if current_centroid is not None:
+                    dx = ref_centroid[0] - current_centroid[0]
+                    dy = ref_centroid[1] - current_centroid[1]
+                    dtheta = ref_theta - current_theta
+                    dtheta = np.arctan2(np.sin(dtheta), np.cos(dtheta))
+                    transformations[frame_idx] = (dx, dy, dtheta, current_centroid)
+                else:
+                    transformations[frame_idx] = (0, 0, 0, ref_centroid)
             else:
-                ref_centroid, _, _ = compute_mask_centroid_and_orientation(reference_mask)
                 transformations[frame_idx] = (0, 0, 0, ref_centroid)
         else:
-            ref_centroid, _, _ = compute_mask_centroid_and_orientation(reference_mask)
             transformations[frame_idx] = (0, 0, 0, ref_centroid)
     
     # Video dimensions (side by side)
@@ -567,7 +527,7 @@ def create_alignment_comparison_video(input_folder, video_segments, original_siz
         # Read the frame
         frame = cv2.imread(os.path.join(input_folder, frame_file))
         
-        # Crop original (fixed crop)
+        # FIXED: Use dynamic crop boundaries centered on reference position
         left = max(0, ref_center_x - crop_size // 2)
         top = max(0, ref_center_y - crop_size // 2)
         right = min(original_size[1], left + crop_size)
@@ -578,18 +538,24 @@ def create_alignment_comparison_video(input_folder, video_segments, original_siz
         if bottom == original_size[0]:
             top = bottom - crop_size
             
+        # Crop original (fixed crop)
         original_crop = frame[top:bottom, left:right]
         if original_crop.shape[:2] != (crop_size, crop_size):
             original_crop = cv2.resize(original_crop, (crop_size, crop_size))
         
-        # Crop aligned
+        # Crop aligned - apply transformation first, then crop at same position
         frame_idx = idx
         if frame_idx in transformations:
             dx, dy, dtheta, mask_centroid = transformations[frame_idx]
-            aligned_frame = apply_transformation_to_image_simple(frame, dx, dy, dtheta, mask_centroid)
+            # Apply safety clipping like in main function
+            dx = np.clip(dx, -80, 80)
+            dy = np.clip(dy, -80, 80)
+            dtheta = np.clip(dtheta, -np.pi/4, np.pi/4)
+            aligned_frame = apply_transformation_to_image_simple(frame, -dx, -dy, -dtheta, mask_centroid)
         else:
             aligned_frame = frame
             
+        # Use the same crop boundaries for aligned frame (object should now be centered)
         aligned_crop = aligned_frame[top:bottom, left:right]
         if aligned_crop.shape[:2] != (crop_size, crop_size):
             aligned_crop = cv2.resize(aligned_crop, (crop_size, crop_size))
@@ -618,6 +584,114 @@ def create_alignment_comparison_video(input_folder, video_segments, original_siz
     out.release()
     print(f"Alignment comparison video saved to: {output_video_path}")
 
+def process_frames_with_adaptive_crop(input_folder, output_folder, video_segments, original_size, crop_size):
+    """Process frames with adaptive cropping that follows the mask centroid."""
+    frame_files = sorted([f for f in os.listdir(input_folder) if f.endswith('.jpg')])
+    
+    if not frame_files:
+        raise ValueError("No jpg files found in the input folder")
+    
+    # Ensure output folder exists
+    os.makedirs(output_folder, exist_ok=True)
+    
+    print(f"Processing {len(frame_files)} frames with adaptive cropping...")
+    
+    # Step 1: Calculate crop centers for all frames
+    crop_centers = []
+    
+    for idx, frame_file in enumerate(frame_files):
+        if idx in video_segments and video_segments[idx]:
+            mask = next(iter(video_segments[idx].values()))[0]
+            
+            if mask.sum() > 100:  # Valid mask
+                # Calculate mask bounding box center
+                y_coords, x_coords = np.where(mask)
+                if len(x_coords) > 0 and len(y_coords) > 0:
+                    center_x = (x_coords.min() + x_coords.max()) // 2
+                    center_y = (y_coords.min() + y_coords.max()) // 2
+                    crop_centers.append((center_x, center_y))
+                    continue
+        
+        # No valid mask - use previous center or image center
+        if crop_centers:
+            crop_centers.append(crop_centers[-1])  # Use last valid center
+        else:
+            crop_centers.append((original_size[1] // 2, original_size[0] // 2))  # Image center
+    
+    print(f"Calculated {len(crop_centers)} crop centers")
+    
+    # Step 2: Apply temporal smoothing to crop centers
+    if len(crop_centers) > 1:
+        window_size = min(5, len(crop_centers))  # Smooth over 5 frames or less
+        
+        # Smooth x coordinates
+        x_coords = [c[0] for c in crop_centers]
+        x_smooth = np.convolve(x_coords, np.ones(window_size)/window_size, mode='same')
+        
+        # Smooth y coordinates  
+        y_coords = [c[1] for c in crop_centers]
+        y_smooth = np.convolve(y_coords, np.ones(window_size)/window_size, mode='same')
+        
+        # Fix edge artifacts: use original values for first and last few frames
+        edge_frames = window_size // 2
+        if len(crop_centers) > edge_frames * 2:
+            # Keep original positions for first few frames
+            x_smooth[:edge_frames] = x_coords[:edge_frames]
+            y_smooth[:edge_frames] = y_coords[:edge_frames]
+            
+            # Keep original positions for last few frames
+            x_smooth[-edge_frames:] = x_coords[-edge_frames:]
+            y_smooth[-edge_frames:] = y_coords[-edge_frames:]
+        
+        # Update crop centers with smoothed values
+        crop_centers = [(int(x_smooth[i]), int(y_smooth[i])) for i in range(len(crop_centers))]
+    
+    print("Applied temporal smoothing to crop centers")
+    
+    # Step 3: Generate crops for each frame
+    for idx, frame_file in enumerate(tqdm(frame_files, desc="Generating adaptive crops")):
+        # Read the frame
+        frame = cv2.imread(os.path.join(input_folder, frame_file))
+        
+        # Get smoothed crop center for this frame
+        crop_center_x, crop_center_y = crop_centers[idx]
+        
+        # Calculate crop boundaries
+        left = max(0, crop_center_x - crop_size // 2)
+        top = max(0, crop_center_y - crop_size // 2)
+        right = min(original_size[1], left + crop_size)
+        bottom = min(original_size[0], top + crop_size)
+        
+        # Adjust if crop window goes out of bounds
+        if right == original_size[1]:
+            left = right - crop_size
+        if bottom == original_size[0]:
+            top = bottom - crop_size
+        
+        # Final safety check
+        left = max(0, left)
+        top = max(0, top)
+        right = min(original_size[1], left + crop_size)
+        bottom = min(original_size[0], top + crop_size)
+        
+        # Crop the frame
+        cropped_frame = frame[top:bottom, left:right]
+        
+        # Ensure exact crop size
+        if cropped_frame.shape[:2] != (crop_size, crop_size):
+            cropped_frame = cv2.resize(cropped_frame, (crop_size, crop_size))
+        
+        # Save the cropped frame
+        output_path = os.path.join(output_folder, frame_file)
+        cv2.imwrite(output_path, cropped_frame)
+        
+        # Print progress for some frames
+        if idx % 50 == 0:
+            print(f"Frame {idx}: crop center ({crop_center_x}, {crop_center_y}), crop window ({left}, {top}) to ({right}, {bottom})")
+    
+    print(f"Adaptive cropping completed. Frames saved to: {output_folder}")
+    return len(frame_files), (crop_size, crop_size)
+
 ###Crop around RIA region
 output_folder = os.path.join(os.path.dirname(crop_dir), os.path.basename(random_video_dir) + "_crop")
 first_frame = cv2.imread(os.path.join(random_video_dir, frame_names[0]))
@@ -630,10 +704,10 @@ create_mask_overlay_video(random_video_dir, video_segments, overlay_video_path, 
 
 print("Creating alignment comparison video...")
 comparison_video_path = os.path.join(os.path.dirname(crop_dir), f"{os.path.basename(random_video_dir)}_alignment_comparison.mp4")
-create_alignment_comparison_video(random_video_dir, video_segments, original_size, 110, comparison_video_path, fps=15)
+create_alignment_comparison_video(random_video_dir, video_segments, original_size, 160, comparison_video_path, fps=15)
 
-# Also run the mask-based alignment
-print("Processing frames with mask alignment...")
-process_frames_with_mask_alignment_robust(random_video_dir, output_folder, video_segments, original_size, 110)
+# Use adaptive cropping instead of complex alignment
+print("Processing frames with adaptive cropping...")
+process_frames_with_adaptive_crop(random_video_dir, output_folder, video_segments, original_size, 160)
 
 
