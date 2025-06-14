@@ -46,12 +46,21 @@ def show_points(coords, labels, ax, marker_size=20):
     ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)   
 
 
-def get_random_unprocessed_video(parent_dir, crop_dir):
+def get_random_unprocessed_video(parent_dir, final_data_dir):
     all_videos = [d for d in os.listdir(parent_dir) if os.path.isdir(os.path.join(parent_dir, d))]
-    unprocessed_videos = [
-        video for video in all_videos
-        if not os.path.exists(os.path.join(crop_dir, video + "_crop"))
-    ]
+    
+    # Check which videos have been fully processed (have "merged" files in final_data)
+    unprocessed_videos = []
+    for video in all_videos:
+        # Look for files in final_data_dir that start with the video name and contain "merged"
+        merged_files = [
+            f for f in os.listdir(final_data_dir) 
+            if f.startswith(video) and "merged" in f and f.endswith('.csv')
+        ]
+        
+        # If no merged file exists, this video is unprocessed
+        if not merged_files:
+            unprocessed_videos.append(video)
     
     if not unprocessed_videos:
         raise ValueError("All videos have been processed.")
@@ -59,13 +68,13 @@ def get_random_unprocessed_video(parent_dir, crop_dir):
     return os.path.join(parent_dir, random.choice(unprocessed_videos))
 
 
-
 parent_video_dir = '/home/lilly/phd/riverchip/data_foranalysis/videotojpg/'
 crop_dir = '/home/lilly/phd/riverchip/data_foranalysis/riacrop/'
+final_data_dir = '/home/lilly/phd/riverchip/data_analyzed/final_data/'
 
 
 # Get a random unprocessed video
-random_video_dir = get_random_unprocessed_video(parent_video_dir, crop_dir)
+random_video_dir = get_random_unprocessed_video(parent_video_dir, final_data_dir)
 print(f"Processing video: {random_video_dir}")
 
 
@@ -79,7 +88,7 @@ frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
 inference_state = predictor.init_state(video_path=random_video_dir)
 
 
-points=np.array([[500, 620], [490, 550]], dtype=np.float32) #RIA region
+points=np.array([[470, 660], [490, 550]], dtype=np.float32) #RIA region
 labels=np.array([1, 0], np.int32)
 
 prompts = {}

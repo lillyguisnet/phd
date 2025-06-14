@@ -487,11 +487,6 @@ saved_file_path = save_brightness_data(df_wide_brightness_and_background, filena
 
 
 
-
-
-
-
-
 """ 
 ###Extract side
 def get_centroid(mask):

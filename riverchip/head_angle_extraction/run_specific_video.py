@@ -15,7 +15,7 @@ def main():
     """Run head angle extraction on specific video."""
     
     # Specify the exact H5 file for the video you want to process
-    input_file = "/home/lilly/phd/riverchip/data_analyzed/head_segmentation/data_original-MMH223_20250519_02_headsegmentation.h5"
+    input_file = "/home/lilly/phd/riverchip/data_analyzed/head_segmentation/data_original-MMH223_20250519_10_headsegmentation.h5"
     
     print(f"🎯 Running head angle extraction on: {input_file}")
     
@@ -32,9 +32,9 @@ def main():
             print(f"   - Bent frames: {sum(~results_df['is_straight'])}")
         
         print(f"\n✅ Processing complete! Results saved to:")
-        print(f"   - CSV: /home/lilly/phd/riverchip/data_analyzed/final_data/data_original-MMH223_20250519_02_headangles.csv")
-        print(f"   - Plots: Look for .png files in the head_angle_extraction directory")
-        print(f"   - Video: Look for .mp4 files in the head_angle_extraction directory")
+        print(f"   - CSV: /home/lilly/phd/riverchip/data_analyzed/final_data/data_original-MMH223_20250519_05_headangles.csv")
+        print(f"   - Plots: /home/lilly/phd/riverchip/data_analyzed/plots/data_original-MMH223_20250519_05_head_angles.png")
+        print(f"   - Video generation: Disabled for faster processing")
         
         return results_df
         

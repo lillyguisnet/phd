@@ -76,7 +76,7 @@ inference_state = predictor.init_state(video_path=video_dir)
 prompts = {}
 ann_frame_idx = 599  #frame index
 ann_obj_id = 2  #object id
-points = np.array([[550, 900], [510, 540]], dtype=np.float32) #whole worm body
+points = np.array([[500, 900], [600, 600]], dtype=np.float32) #whole worm body
 labels = np.array([1, 1], np.int32)
 prompts[ann_obj_id] = points, labels
 _, out_obj_ids, out_mask_logits = predictor.add_new_points(

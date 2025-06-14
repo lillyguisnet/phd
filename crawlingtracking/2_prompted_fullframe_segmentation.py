@@ -54,7 +54,7 @@ destination_path = os.path.join(video_dir, filename)
 # Copy the image to the destination folder
 shutil.copy2(prompt_path, destination_path)
 
-# Replace this comment with your image processing code
+
 print(f"Processing video_dir: {video_dir}")
 frame_names = [
     p for p in os.listdir(video_dir)
@@ -91,7 +91,107 @@ for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
         for i, out_obj_id in enumerate(out_obj_ids)
     }
 
-def create_overlay_video(video_segments, video_dir, frame_names, output_path, mask_color=(0, 255, 0), alpha=0.5, fps=30):
+
+
+def analyze_masks(video_segments):
+    results = {'empty': {}, 'large': {}, 'overlapping': {}}
+    max_counts = {'empty': 0, 'large': 0, 'overlapping': 0}
+    max_frames = {'empty': None, 'large': None, 'overlapping': None}
+
+    for frame, mask_dict in video_segments.items():
+        mask_ids = list(mask_dict.keys())
+        
+        # Track empty masks
+        empty_masks = []
+        large_masks = []
+        overlapping_masks = []
+        
+        for mask_id in mask_ids:
+            mask = mask_dict[mask_id]
+            mask_sum = mask.sum()
+            
+            # Check for empty masks
+            if mask_sum == 0:
+                empty_masks.append(mask_id)
+            
+            # Check for large masks (more than 800 pixels)
+            if mask_sum >= 800:
+                large_masks.append(mask_id)
+            
+            # Check for overlaps with other masks
+            for other_id in mask_ids:
+                if other_id > mask_id:  # Only check each pair once
+                    other_mask = mask_dict[other_id]
+                    intersection = np.logical_and(mask, other_mask)
+                    union = np.logical_or(mask, other_mask)
+                    overlap_pixels = np.sum(intersection)
+                    iou = overlap_pixels / np.sum(union) if np.sum(union) > 0 else 0
+                    
+                    if overlap_pixels > 0:
+                        overlapping_masks.append((mask_id, other_id, iou, overlap_pixels))
+        
+        # Store results for this frame
+        if empty_masks:
+            results['empty'][frame] = empty_masks
+        if large_masks:
+            results['large'][frame] = large_masks
+        if overlapping_masks:
+            results['overlapping'][frame] = overlapping_masks
+        
+        # Update max counts
+        for category, masks in [('empty', empty_masks), ('large', large_masks), ('overlapping', overlapping_masks)]:
+            if len(masks) > max_counts[category]:
+                max_counts[category] = len(masks)
+                max_frames[category] = frame
+
+    return results, max_counts, max_frames
+
+def print_analysis_results(results, max_counts, max_frames):
+    print("\nAnalysis Results:")
+    print("-" * 50)
+    
+    # Print empty mask results
+    if results['empty']:
+        print("\nFrames with empty masks:")
+        for frame, mask_ids in results['empty'].items():
+            print(f"  Frame {frame}: Mask IDs {mask_ids}")
+        print(f"Maximum empty masks in a single frame: {max_counts['empty']} (Frame {max_frames['empty']})")
+    else:
+        print("\nNo frames with empty masks found!")
+    
+    # Print large mask results
+    if results['large']:
+        print("\nFrames with large masks (≥800 pixels):")
+        for frame, mask_ids in results['large'].items():
+            print(f"  Frame {frame}: Mask IDs {mask_ids}")
+        print(f"Maximum large masks in a single frame: {max_counts['large']} (Frame {max_frames['large']})")
+    else:
+        print("\nNo frames with large masks found!")
+    
+    # Print overlapping mask results
+    if results['overlapping']:
+        print("\nFrames with overlapping masks:")
+        for frame, overlaps in results['overlapping'].items():
+            overlap_info = [f"{a}-{b} ({iou:.2%}, {pixels} pixels)" for a, b, iou, pixels in overlaps]
+            print(f"  Frame {frame}: Overlapping pairs {', '.join(overlap_info)}")
+        print(f"Maximum overlapping pairs in a single frame: {max_counts['overlapping']} (Frame {max_frames['overlapping']})")
+    else:
+        print("\nNo frames with overlapping masks found!")
+    
+    # Print summary statistics
+    total_frames = len(video_segments)
+    frames_with_issues = len(set().union(*[set(frames.keys()) for frames in results.values()]))
+    print(f"\nSummary:")
+    print(f"Total frames analyzed: {total_frames}")
+    print(f"Frames with any issues: {frames_with_issues} ({frames_with_issues/total_frames*100:.1f}%)")
+
+# Analyze the video segments
+results, max_counts, max_frames = analyze_masks(video_segments)
+print_analysis_results(results, max_counts, max_frames)
+
+
+
+def create_overlay_video(video_segments, video_dir, frame_names, output_path, mask_color=(0, 255, 0), alpha=0.5, fps=10):
     """
     Create an overlay video with segmentation masks overlaid on the original frames.
     
