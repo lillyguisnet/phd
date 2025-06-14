@@ -42,6 +42,76 @@ def _process_frame_chunk(args):
     return start_h5_idx, chunk_masks_by_obj
 
 
+def _process_frame_for_video(args):
+    """Helper function to process a single frame for video creation."""
+    frame_idx, frame_name, video_dir, masks_for_frame, colors, alpha, shape = args
+    
+    image_path = os.path.join(video_dir, frame_name)
+    
+    try:
+        if masks_for_frame:
+            # Load the image
+            image = cv2.imread(image_path)
+            if image is None:
+                raise ValueError(f"Could not read image from {image_path}")
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+            # Create a blank overlay
+            overlay = np.zeros_like(image)
+            
+            # Process each mask
+            for mask_id, mask in masks_for_frame.items():
+                if mask_id is None: 
+                    continue
+                # Convert mask to binary numpy array if it's not already
+                if isinstance(mask, torch.Tensor):
+                    mask = mask.cpu().numpy()
+                
+                if mask.dtype != bool:
+                    mask = mask > 0.5
+                
+                # Ensure mask is 2D
+                if mask.ndim > 2:
+                    mask = mask.squeeze()
+                
+                # Resize the mask to match the image dimensions
+                mask_resized = cv2.resize(mask.astype(np.uint8), (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+                
+                # Get the color for this mask
+                color = colors.get(mask_id)
+                if color is None:
+                    continue
+
+                # Create a colored mask
+                colored_mask = np.zeros_like(image)
+                colored_mask[mask_resized == 1] = color
+                
+                # Add the colored mask to the overlay
+                overlay = cv2.addWeighted(overlay, 1, colored_mask, 1, 0)
+            
+            # Overlay the masks on the image
+            overlaid_image = cv2.addWeighted(image, 1, overlay, alpha, 0)
+        else:
+             # If no segmentation for this frame, use the original image
+            overlaid_image = cv2.imread(image_path)
+            if overlaid_image is None:
+                raise ValueError(f"Could not read image from {image_path}")
+            overlaid_image = cv2.cvtColor(overlaid_image, cv2.COLOR_BGR2RGB)
+
+        # Return in BGR format for cv2.VideoWriter
+        return cv2.cvtColor(overlaid_image, cv2.COLOR_RGB2BGR)
+
+    except Exception as e:
+        print(f"Error processing frame {frame_idx}: {str(e)}")
+        # If there's an error, write the original frame
+        original_frame = cv2.imread(image_path)
+        if original_frame is not None:
+            return original_frame
+        
+        print(f"Could not read original frame {frame_idx}, returning blank frame.")
+        return np.zeros((shape[0], shape[1], 3), dtype=np.uint8)
+
+
 def show_mask(mask, ax, obj_id=None, random_color=False):
     color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0) if random_color else \
             np.array([*plt.get_cmap("tab10")(0 if obj_id is None else obj_id)[:3], 0.6])
@@ -265,7 +335,7 @@ def analyze_and_print_results(video_segments):
     else:
         print("\nNo segments to analyze for statistics.")
 
-def create_mask_overlay_video(video_dir, frame_names, video_segments, output_video_path, fps=10, alpha=0.99):
+def create_mask_overlay_video(video_dir, frame_names, video_segments, output_video_path, fps=10, alpha=0.99, num_workers=None):
     # Predefined list of visually distinct colors
     COLORS = [
         (255, 0, 0),    # Red
@@ -286,47 +356,6 @@ def create_mask_overlay_video(video_dir, frame_names, video_segments, output_vid
         (0, 255, 128)   # Spring Green
     ]
 
-    def overlay_masks_on_image(image_path, masks, colors, alpha=0.99):
-        # Load the image
-        image = cv2.imread(image_path)
-        if image is None:
-            raise ValueError(f"Could not read image from {image_path}")
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
-        # Create a blank overlay
-        overlay = np.zeros_like(image)
-        
-        # Process each mask
-        for mask_id, mask in masks.items():
-            # Convert mask to binary numpy array if it's not already
-            if isinstance(mask, torch.Tensor):
-                mask = mask.cpu().numpy()
-            
-            if mask.dtype != bool:
-                mask = mask > 0.5
-            
-            # Ensure mask is 2D
-            if mask.ndim > 2:
-                mask = mask.squeeze()
-            
-            # Resize the mask to match the image dimensions
-            mask_resized = cv2.resize(mask.astype(np.uint8), (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
-            
-            # Get the color for this mask
-            color = colors[mask_id]
-            
-            # Create a colored mask
-            colored_mask = np.zeros_like(image)
-            colored_mask[mask_resized == 1] = color
-            
-            # Add the colored mask to the overlay
-            overlay = cv2.addWeighted(overlay, 1, colored_mask, 1, 0)
-        
-        # Overlay the masks on the image
-        overlaid_image = cv2.addWeighted(image, 1, overlay, alpha, 0)
-        
-        return overlaid_image
-
     # Prepare the video writer
     frame = cv2.imread(os.path.join(video_dir, frame_names[0]))
     if frame is None:
@@ -341,34 +370,25 @@ def create_mask_overlay_video(video_dir, frame_names, video_segments, output_vid
         all_mask_ids.update(masks.keys())
     colors = {}
     for i, mask_id in enumerate(all_mask_ids):
-        colors[mask_id] = COLORS[i % len(COLORS)]
-
-    # Process each frame
-    for frame_idx in range(len(frame_names)):
-        #print(frame_idx)
-        image_path = os.path.join(video_dir, frame_names[frame_idx])
-        
-        try:
-            if frame_idx in video_segments:
-                masks = video_segments[frame_idx]
-                overlaid_frame = overlay_masks_on_image(image_path, masks, colors, alpha)
-            else:
-                # If no segmentation for this frame, use the original image
-                overlaid_frame = cv2.imread(image_path)
-                if overlaid_frame is None:
-                    raise ValueError(f"Could not read image from {image_path}")
-                overlaid_frame = cv2.cvtColor(overlaid_frame, cv2.COLOR_BGR2RGB)
+        if mask_id is not None:
+            colors[mask_id] = COLORS[i % len(COLORS)]
             
-            # Write the frame to the video
-            out.write(cv2.cvtColor(overlaid_frame, cv2.COLOR_RGB2BGR))
-        except Exception as e:
-            print(f"Error processing frame {frame_idx}: {str(e)}")
-            # If there's an error, write the original frame
-            original_frame = cv2.imread(image_path)
-            if original_frame is not None:
-                out.write(original_frame)
-            else:
-                print(f"Could not read original frame {frame_idx}")
+    # Setup for parallel processing
+    if num_workers is None:
+        num_workers = multiprocessing.cpu_count()
+
+    tasks = []
+    for frame_idx, frame_name in enumerate(frame_names):
+        masks_for_frame = video_segments.get(frame_idx, {})
+        tasks.append((frame_idx, frame_name, video_dir, masks_for_frame, colors, alpha, frame.shape))
+
+    # Process frames in parallel and write to video
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        with tqdm.tqdm(total=len(tasks), desc="Creating overlay video") as pbar:
+            for result_frame in pool.imap(_process_frame_for_video, tasks):
+                if result_frame is not None:
+                    out.write(result_frame)
+                pbar.update(1)
 
     # Release the video writer
     out.release()
@@ -788,7 +808,8 @@ create_mask_overlay_video(
     video_segments,
     output_video_path="crop_promptframe_tst_food.mp4",
     fps=10,
-    alpha=1.0
+    alpha=1.0,
+    num_workers=multiprocessing.cpu_count()
 )
 
 # Remove prompt frames from the video directory
