@@ -22,6 +22,8 @@ import networkx as nx
 import multiprocessing as mp
 import os
 
+# Note: For best performance, ensure this script is run with if __name__ == "__main__":
+
 with open('propagation_fixedcrop.pkl', 'rb') as file:
     video_segments = pickle.load(file)
 
@@ -746,29 +748,64 @@ def analyze_shape(skeleton, frame_num, head_position):
     }
 
 
-def process_frame_batch(batch_data):
-    """Process a batch of frames for multiprocessing."""
-    batch_results = []
-    for frame_num, frame_data, head_position in batch_data:
-        try:
-            print(f"Processing frame: {frame_num}")
-            mask = frame_data[1][0]
-            cleaned_mask = clean_mask(mask)
-            skeleton = get_skeleton(cleaned_mask)
-            
-            frame_results = analyze_shape(skeleton, frame_num, head_position)
-            frame_results['cleaned_mask'] = cleaned_mask
-            batch_results.append((frame_num, frame_results))
-        except Exception as e:
-            print(f"Error processing frame {frame_num}: {e}")
-            # Return a minimal result to keep going
-            batch_results.append((frame_num, {'frame': frame_num, 'error': str(e)}))
-    
-    return batch_results
+def process_frame_first_pass(frame_item):
+    """Process a single frame for the first pass (head tracking)."""
+    frame_num, frame_data = frame_item
+    import time
+    start_time = time.time()
+    try:
+        print(f"First pass - Frame: {frame_num} [PID: {os.getpid()}]")
+        mask = frame_data[1][0]
+        cleaned_mask = clean_mask(mask)
+        skeleton = get_skeleton(cleaned_mask)
+        
+        frame_results = analyze_shape(skeleton, frame_num, None)
+        frame_results['cleaned_mask'] = cleaned_mask
+        
+        elapsed = time.time() - start_time
+        print(f"Completed frame {frame_num} in {elapsed:.2f}s [PID: {os.getpid()}]")
+        return (frame_num, frame_results)
+    except Exception as e:
+        elapsed = time.time() - start_time
+        print(f"Error in first pass frame {frame_num} after {elapsed:.2f}s: {e}")
+        return (frame_num, {'frame': frame_num, 'error': str(e)})
+
+
+def process_frame_second_pass(frame_item):
+    """Process a single frame for the second pass (with head position)."""
+    frame_num, frame_data, head_position = frame_item
+    try:
+        print(f"Second pass - Frame: {frame_num}")
+        mask = frame_data[1][0]
+        cleaned_mask = clean_mask(mask)
+        skeleton = get_skeleton(cleaned_mask)
+        
+        frame_results = analyze_shape(skeleton, frame_num, head_position)
+        frame_results['cleaned_mask'] = cleaned_mask
+        return (frame_num, frame_results)
+    except Exception as e:
+        print(f"Error in second pass frame {frame_num}: {e}")
+        return (frame_num, {'frame': frame_num, 'error': str(e)})
 
 
 def analyze_video(segmentation_dict, fps=10, window_size=5, overlap=2.5):
-    # Initialize result containers
+    # Use all available CPUs
+    num_processes = min(38, mp.cpu_count())
+    print(f"Using {num_processes} processes for parallel processing")
+    print(f"Total frames to process: {len(segmentation_dict)}")
+    
+    # First pass: parallel processing for initial shape analysis
+    print("First pass: analyzing frames in parallel for head tracking...")
+    frame_items = list(segmentation_dict.items())
+    
+    print(f"Starting multiprocessing pool with {num_processes} processes...")
+    with mp.Pool(processes=num_processes) as pool:
+        print("Pool created, starting parallel processing...")
+        first_pass_raw_results = pool.map(process_frame_first_pass, frame_items)
+        print("First pass parallel processing completed!")
+    
+    # Organize first pass results
+    first_pass_results = {}
     frames = []
     smooth_points = []
     curvatures = []
@@ -782,30 +819,36 @@ def analyze_video(segmentation_dict, fps=10, window_size=5, overlap=2.5):
     head_bends = []
     masks = []
     
-    # First pass to get endpoints (single-threaded for head tracking)
-    print("First pass: analyzing frames for head tracking...")
-    first_pass_results = {}
-    
-    for frame_num, frame_data in segmentation_dict.items():
-        print("Find head: " + str(frame_num))
-        mask = frame_data[1][0]
-        cleaned_mask = clean_mask(mask)
-        skeleton = get_skeleton(cleaned_mask)
-        
-        frame_results = analyze_shape(skeleton, frame_num, None)
-        first_pass_results[frame_num] = frame_results
-        frames.append(frame_results['frame'])
-        smooth_points.append(frame_results['smooth_points'])
-        curvatures.append(frame_results['curvature'])
-        max_amplitudes.append(frame_results['max_amplitude'])
-        avg_amplitudes.append(frame_results['avg_amplitude'])
-        wavelengths.append(frame_results['wavelength'])
-        worm_lengths.append(frame_results['worm_length'])
-        wave_numbers.append(frame_results['wave_number'])
-        normalized_wavelengths.append(frame_results['normalized_wavelength'])
-        dominant_spatial_freqs.append(frame_results['dominant_spatial_freq'])
-        head_bends.append(frame_results['head_bend'])
-        masks.append(cleaned_mask)
+    for frame_num, frame_results in sorted(first_pass_raw_results):
+        if 'error' not in frame_results:
+            first_pass_results[frame_num] = frame_results
+            frames.append(frame_results['frame'])
+            smooth_points.append(frame_results['smooth_points'])
+            curvatures.append(frame_results['curvature'])
+            max_amplitudes.append(frame_results['max_amplitude'])
+            avg_amplitudes.append(frame_results['avg_amplitude'])
+            wavelengths.append(frame_results['wavelength'])
+            worm_lengths.append(frame_results['worm_length'])
+            wave_numbers.append(frame_results['wave_number'])
+            normalized_wavelengths.append(frame_results['normalized_wavelength'])
+            dominant_spatial_freqs.append(frame_results['dominant_spatial_freq'])
+            head_bends.append(frame_results['head_bend'])
+            masks.append(frame_results['cleaned_mask'])
+        else:
+            print(f"Skipping frame {frame_num} in first pass due to error: {frame_results['error']}")
+            # Add placeholder data to maintain consistency
+            frames.append(frame_num)
+            smooth_points.append(np.zeros((100, 2)))
+            curvatures.append(np.zeros(100))
+            max_amplitudes.append(0.0)
+            avg_amplitudes.append(0.0)
+            wavelengths.append(100.0)
+            worm_lengths.append(100.0)
+            wave_numbers.append(1.0)
+            normalized_wavelengths.append(1.0)
+            dominant_spatial_freqs.append(0.0)
+            head_bends.append(0.0)
+            masks.append(np.zeros((50, 50), dtype=bool))
 
     # Identify head
     endpoints = track_endpoints(frames, smooth_points)
@@ -816,65 +859,52 @@ def analyze_video(segmentation_dict, fps=10, window_size=5, overlap=2.5):
     corrected_head_positions = head_positions
 
     # Second pass with head information using multiprocessing
-    print("Second pass: analyzing frames with head information using multiprocessing...")
+    print("Second pass: analyzing frames with head information in parallel...")
+    
+    # Prepare second pass data
+    second_pass_items = []
+    for frame_num, frame_data in segmentation_dict.items():
+        if frame_num in corrected_head_positions:
+            head_index = corrected_head_positions[frame_num]
+            second_pass_items.append((frame_num, frame_data, head_index))
+    
+    # Process second pass in parallel
+    with mp.Pool(processes=num_processes) as pool:
+        second_pass_raw_results = pool.map(process_frame_second_pass, second_pass_items)
+    
+    # Reset containers for second pass
     frames, smooth_points, curvatures, max_amplitudes, avg_amplitudes, wavelengths, worm_lengths, wave_numbers, normalized_wavelengths, dominant_spatial_freqs, head_bends = ([] for _ in range(11))
     
-    # Prepare data for multiprocessing
-    frame_items = list(segmentation_dict.items())
-    batch_size = max(1, len(frame_items) // 38)  # Distribute across 38 CPUs
-    batches = []
-    
-    for i in range(0, len(frame_items), batch_size):
-        batch = []
-        for j in range(i, min(i + batch_size, len(frame_items))):
-            frame_num, frame_data = frame_items[j]
-            head_index = corrected_head_positions[frame_num]
-            batch.append((frame_num, frame_data, head_index))
-        batches.append(batch)
-    
-    # Process batches in parallel
-    print(f"Processing {len(batches)} batches with {min(38, len(batches))} processes...")
-    with mp.Pool(processes=min(38, len(batches))) as pool:
-        batch_results = pool.map(process_frame_batch, batches)
-    
-    # Collect results in order
-    all_results = {}
-    for batch_result in batch_results:
-        for frame_num, frame_results in batch_result:
-            all_results[frame_num] = frame_results
-    
-    # Extract results in frame order
-    for frame_num in sorted(segmentation_dict.keys()):
-        if frame_num in all_results:
-            frame_results = all_results[frame_num]
-            if 'error' not in frame_results:
-                frames.append(frame_results['frame'])
-                smooth_points.append(frame_results['smooth_points'])
-                curvatures.append(frame_results['curvature'])
-                max_amplitudes.append(frame_results['max_amplitude'])
-                avg_amplitudes.append(frame_results['avg_amplitude'])
-                wavelengths.append(frame_results['wavelength'])
-                worm_lengths.append(frame_results['worm_length'])
-                wave_numbers.append(frame_results['wave_number'])
-                normalized_wavelengths.append(frame_results['normalized_wavelength'])
-                dominant_spatial_freqs.append(frame_results['dominant_spatial_freq'])
-                head_bends.append(frame_results['head_bend'])
-                masks.append(frame_results['cleaned_mask'])
-            else:
-                print(f"Skipping frame {frame_num} due to error: {frame_results['error']}")
-                # Use default values to maintain array consistency
-                frames.append(frame_num)
-                smooth_points.append(np.zeros((100, 2)))
-                curvatures.append(np.zeros(100))
-                max_amplitudes.append(0.0)
-                avg_amplitudes.append(0.0)
-                wavelengths.append(100.0)
-                worm_lengths.append(100.0)
-                wave_numbers.append(1.0)
-                normalized_wavelengths.append(1.0)
-                dominant_spatial_freqs.append(0.0)
-                head_bends.append(0.0)
-                masks.append(np.zeros((50, 50), dtype=bool))
+    # Organize second pass results
+    for frame_num, frame_results in sorted(second_pass_raw_results):
+        if 'error' not in frame_results:
+            frames.append(frame_results['frame'])
+            smooth_points.append(frame_results['smooth_points'])
+            curvatures.append(frame_results['curvature'])
+            max_amplitudes.append(frame_results['max_amplitude'])
+            avg_amplitudes.append(frame_results['avg_amplitude'])
+            wavelengths.append(frame_results['wavelength'])
+            worm_lengths.append(frame_results['worm_length'])
+            wave_numbers.append(frame_results['wave_number'])
+            normalized_wavelengths.append(frame_results['normalized_wavelength'])
+            dominant_spatial_freqs.append(frame_results['dominant_spatial_freq'])
+            head_bends.append(frame_results['head_bend'])
+            masks.append(frame_results['cleaned_mask'])
+        else:
+            print(f"Skipping frame {frame_num} in second pass due to error: {frame_results['error']}")
+            # Use default values to maintain array consistency
+            frames.append(frame_num)
+            smooth_points.append(np.zeros((100, 2)))
+            curvatures.append(np.zeros(100))
+            max_amplitudes.append(0.0)
+            avg_amplitudes.append(0.0)
+            wavelengths.append(100.0)
+            worm_lengths.append(100.0)
+            wave_numbers.append(1.0)
+            normalized_wavelengths.append(1.0)
+            dominant_spatial_freqs.append(0.0)
+            head_bends.append(0.0)
+            masks.append(np.zeros((50, 50), dtype=bool))
 
     # Temporal frequency analysis
     curvature_1d = np.array([np.mean(c) for c in curvatures])
