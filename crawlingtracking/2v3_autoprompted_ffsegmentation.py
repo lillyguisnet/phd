@@ -17,6 +17,7 @@ import h5py
 import random
 import concurrent.futures
 import multiprocessing
+import pickle
 
 # Configure CUDA settings
 torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
@@ -158,6 +159,21 @@ def remove_prompt_frames_from_video(video_dir, frame_mapping):
             os.remove(frame_path)
     
     print(f"Removed {len(frame_mapping)} prompt frames from the video directory.")
+
+def filter_prompt_frames_from_segments(video_segments, frame_mapping):
+    """
+    Remove prompt frames from the video_segments dictionary.
+    
+    :param video_segments: Dictionary containing frame segments
+    :param frame_mapping: Dictionary mapping frame numbers to original prompt frame names
+    :return: Filtered video_segments dictionary
+    """
+    filtered_segments = {
+        frame: segments for frame, segments in video_segments.items()
+        if frame not in frame_mapping
+    }
+    print(f"Removed {len(frame_mapping)} prompt frames from video_segments dictionary.")
+    return filtered_segments
 
 def add_prompts(inference_state, frame_idx, obj_id, points, labels):
     _, out_obj_ids, out_mask_logits = predictor.add_new_points(
@@ -633,19 +649,6 @@ def print_prompt_frame_analysis(prompt_frame_results):
     print(f"\nTotal unique object IDs detected across all frames: {safe_sort(all_objects)}")
     print(f"Number of unique objects: {len(all_objects)}")
 
-    # Additional statistics
-    if video_segments:
-        objects_per_frame = [len([obj for obj in segments.keys() if obj is not None]) for segments in video_segments.values()]
-        if objects_per_frame:
-            avg_objects_per_frame = sum(objects_per_frame) / len(objects_per_frame)
-            print(f"\nAverage number of objects per frame: {avg_objects_per_frame:.2f}")
-            print(f"Minimum objects in a frame: {min(objects_per_frame)}")
-            print(f"Maximum objects in a frame: {max(objects_per_frame)}")
-        else:
-            print("\nNo objects found to analyze.")
-    else:
-        print("\nNo segments to analyze for statistics.")
-
 def save_video_segments_to_h5(video_segments, video_dir, output_dir, frame_mapping, num_workers=None):
     """
     Saves video segments to an HDF5 file, using parallel processing to speed up the process.
@@ -741,7 +744,8 @@ segmented_videos_dir = '/home/lilly/phd/crawlingtracking/final_data/fullframe_se
 video_dir = get_random_unprocessed_video(videos_dir, segmented_videos_dir)
 print(f"Processing video: {video_dir}")
 
-#region [add prompt frames to video]
+
+#region [full frame segmentation]
 prompt_dir = "/home/lilly/phd/crawlingtracking/prompt_frames"
 prompt_data_path = "/home/lilly/phd/crawlingtracking/prompt_data.json"
 
@@ -781,9 +785,6 @@ print_prompt_frame_analysis(prompt_frame_results)
 
 #prompts_for_frame = check_prompt_data(2, prompt_data, video_dir, inference_state, frame_mapping)
 
-#endregion
-
-
 ### Propagate in video
 video_segments = {}
 last_frame_idx = max(frame_mapping.keys())
@@ -800,6 +801,7 @@ analyze_and_print_results(video_segments)
 #overlay_predictions_on_frame(video_dir, 506, video_segments, alpha=0.99)
 
 #Make video with masks
+# Filter out prompt frames from video_segments before creating the overlay video
 create_mask_overlay_video(
     video_dir,
     frame_names,
@@ -813,17 +815,140 @@ create_mask_overlay_video(
 
 # Remove prompt frames from the video directory
 remove_prompt_frames_from_video(video_dir, frame_mapping)
+filtered_video_segments = filter_prompt_frames_from_segments(video_segments, frame_mapping)
 
-output_dir = segmented_videos_dir
-filtered_video_segments = save_video_segments_to_h5(video_segments, video_dir, output_dir, frame_mapping)
+#output_dir = segmented_videos_dir
+#filtered_video_segments = save_video_segments_to_h5(video_segments, video_dir, output_dir, frame_mapping)
+
+#endregion
+
+#region [hd segmentation]
+
+def get_hdsegmentation(ffvideo_segments, crop_size=94):
+    hd_video_segments = {}
+    for frame_num in sorted(ffvideo_segments.keys()):
+        print(frame_num)
+        #predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint)
+        or_mask = next(iter(ffvideo_segments[frame_num].values()))
+        # Find the bounding box of the segment
+        rows, cols = np.where(or_mask[0])
+        center_y, center_x = rows.mean(), cols.mean()
+        # Calculate the crop boundaries
+        top = max(0, int(center_y - crop_size // 2))
+        bottom = min(or_mask.shape[1], top + crop_size)
+        left = max(0, int(center_x - crop_size // 2))
+        right = min(or_mask.shape[2], left + crop_size)
+        # Crop the original frame
+        or_frame = cv2.imread(os.path.join(video_dir, f"{frame_num:06}.jpg"))
+        cropped_arr = or_frame[top:bottom, left:right]
+        # Save the cropped frame to prediction folder
+        cv2.imwrite("/home/lilly/phd/crawlingtracking/tstvideo_tojpg/cropprompt/000001.jpg", cropped_arr)
+
+        # Make prediction on the cropped frame
+        cropped_dir = "/home/lilly/phd/crawlingtracking/tstvideo_tojpg/cropprompt"
+        frame_names = [
+            p for p in os.listdir(cropped_dir)
+            if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
+        ]
+        frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+        if frame_num == 0:
+            inference_state = predictor.init_state(video_path=cropped_dir)
+        else:
+            predictor.reset_state(inference_state)
+            inference_state = predictor.init_state(video_path=cropped_dir)
+        #Add click on the first frame
+        ann_frame_idx = 0 #frame
+        ann_obj_id = 1 #object
+        points = np.array([[64, 45]], dtype=np.float32)
+        labels = np.array([1], np.int32)
+        _, out_obj_ids, out_mask_logits = predictor.add_new_points(
+            inference_state=inference_state,
+            frame_idx=ann_frame_idx,
+            obj_id=ann_obj_id,
+            points=points,
+            labels=labels,
+        )
+        #Propagate to 'video' and collect the results in a dict
+        video_segments = {}  # video_segments contains the per-frame segmentation results
+        for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
+            video_segments[out_frame_idx] = {
+                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                for i, out_obj_id in enumerate(out_obj_ids)
+            }
+        cropped_hd_segment = video_segments[1][1]
+
+        # Resize the cropped segment to the original size
+        or_shape = or_frame.shape[:2]
+        full_hd_segment = np.zeros(or_shape, dtype=bool)
+        full_hd_segment[top:bottom, left:right] = cropped_hd_segment
+
+        reshaped_hdseg = np.expand_dims(full_hd_segment, axis=0)
+        hd_video_segments[frame_num] = {1: reshaped_hdseg}
+
+
+    return hd_video_segments
+
+hd_video_segments = get_hdsegmentation(filtered_video_segments, crop_size=94)
+
+frame_names = sorted([p for p in os.listdir(video_dir) if p.lower().endswith(('.jpg', '.jpeg'))], key=lambda p: int(os.path.splitext(p)[0]))
+create_mask_overlay_video(
+    video_dir,
+    frame_names,
+    hd_video_segments,
+    output_video_path="crop_promptframe_tst_foodhd.mp4",
+    fps=10,
+    alpha=1.0,
+    num_workers=multiprocessing.cpu_count(),
+    scale_factor=0.5
+)
+
+predimg = hd_video_segments[361][1][0].astype(int)
+cv2.imwrite("tst.png", predimg*200)
+
+
+# Convert boolean array to uint8 and scale to 0-255 range
+predimg = cropped_hd_segment.astype(np.uint8) * 255
+# Ensure the array is 2D (height x width)
+if predimg.ndim > 2:
+    predimg = predimg.squeeze()
+cv2.imwrite("tst.png", predimg)
+
+
+with open('/home/lilly/phd/crawlingtracking/final_data/ff_hdsegmentation/hd_video_segments.pkl', 'wb') as file:
+    pickle.dump(hd_video_segments, file)
+
+
+#endregion
+
+
+
+
+ann_frame_idx = 1 #frame
+ann_obj_id = 1 #object
+points = np.array([[70, 45],
+                   [65, 44]], dtype=np.float32)
+labels = np.array([1, 0], np.int32)
+_, out_obj_ids, out_mask_logits = predictor.add_new_points(
+    inference_state=inference_state,
+    frame_idx=ann_frame_idx,
+    obj_id=ann_obj_id,
+    points=points,
+    labels=labels,
+)
+
+plt.figure(figsize=(12, 8))
+plt.title(f"frame {ann_frame_idx}")
+plt.imshow(Image.open(os.path.join(cropped_dir, frame_names[ann_frame_idx])))
+show_points(points, labels, plt.gca())
+show_mask((out_mask_logits[0] > 0.0).cpu().numpy(), plt.gca(), obj_id=out_obj_ids[0])
+plt.savefig("tstclick.png")
+plt.close()
 
 
 
 
 
-
-
-####Adjust prompts####
+####Adjust ff prompts####
 prompt_data["1"]
 
 
