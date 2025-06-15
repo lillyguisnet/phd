@@ -724,6 +724,31 @@ def save_video_segments_to_h5(video_segments, video_dir, output_dir, frame_mappi
     print(f"Mask dimensions: {mask_shape}")
     return filtered_video_segments
 
+def save_hd_video_segments(hd_video_segments, video_dir, output_dir):
+    """
+    Save HD video segments to a pickle file with a unique name based on the video folder.
+    
+    Args:
+        hd_video_segments (dict): Dictionary containing the HD video segments
+        video_dir (str): Path to the video directory
+        output_dir (str): Directory where the pickle file should be saved
+    """
+    # Get the base name of the video directory
+    video_folder_name = os.path.basename(os.path.normpath(video_dir))
+    
+    # Create the output filename
+    output_filename = f"{video_folder_name}_hd_segments.pkl"
+    output_path = os.path.join(output_dir, output_filename)
+    
+    # Ensure the output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Save the HD video segments
+    with open(output_path, 'wb') as file:
+        pickle.dump(hd_video_segments, file)
+    
+    print(f"Saved HD video segments to: {output_path}")
+
 def get_random_unprocessed_video(crop_videos_dir, segmented_videos_dir):
     all_videos = [d for d in os.listdir(crop_videos_dir) if os.path.isdir(os.path.join(crop_videos_dir, d))]
     unprocessed_videos = [
@@ -842,7 +867,7 @@ def get_hdsegmentation(ffvideo_segments, crop_size=94):
         or_frame = cv2.imread(os.path.join(video_dir, f"{frame_num:06}.jpg"))
         cropped_arr = or_frame[top:bottom, left:right]
         # Save the cropped frame to prediction folder
-        cv2.imwrite("/home/lilly/phd/crawlingtracking/tstvideo_tojpg/cropprompt/000001.jpg", cropped_arr)
+        cv2.imwrite("/home/lilly/phd/crawlingtracking/tstvideo_tojpg/cropprompt/000002.jpg", cropped_arr)
 
         # Make prediction on the cropped frame
         cropped_dir = "/home/lilly/phd/crawlingtracking/tstvideo_tojpg/cropprompt"
@@ -856,6 +881,7 @@ def get_hdsegmentation(ffvideo_segments, crop_size=94):
         else:
             predictor.reset_state(inference_state)
             inference_state = predictor.init_state(video_path=cropped_dir)
+
         #Add click on the first frame
         ann_frame_idx = 0 #frame
         ann_obj_id = 1 #object
@@ -868,6 +894,20 @@ def get_hdsegmentation(ffvideo_segments, crop_size=94):
             points=points,
             labels=labels,
         )
+        time.sleep(0.02)
+        #Add click on the second frame
+        ann_frame_idx = 1 #frame
+        ann_obj_id = 1 #object
+        points = np.array([[70, 45], [65, 44]], dtype=np.float32)
+        labels = np.array([1, 0], np.int32)
+        _, out_obj_ids, out_mask_logits = predictor.add_new_points(
+            inference_state=inference_state,
+            frame_idx=ann_frame_idx,
+            obj_id=ann_obj_id,
+            points=points,
+            labels=labels,
+        )
+
         #Propagate to 'video' and collect the results in a dict
         video_segments = {}  # video_segments contains the per-frame segmentation results
         for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
@@ -875,7 +915,7 @@ def get_hdsegmentation(ffvideo_segments, crop_size=94):
                 out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
                 for i, out_obj_id in enumerate(out_obj_ids)
             }
-        cropped_hd_segment = video_segments[1][1]
+        cropped_hd_segment = video_segments[2][1]
 
         # Resize the cropped segment to the original size
         or_shape = or_frame.shape[:2]
@@ -902,9 +942,9 @@ create_mask_overlay_video(
     scale_factor=0.5
 )
 
-predimg = hd_video_segments[361][1][0].astype(int)
-cv2.imwrite("tst.png", predimg*200)
 
+predimg = hd_video_segments[362][1][0].astype(int)
+cv2.imwrite("tst.png", predimg*200)
 
 # Convert boolean array to uint8 and scale to 0-255 range
 predimg = cropped_hd_segment.astype(np.uint8) * 255
@@ -914,15 +954,17 @@ if predimg.ndim > 2:
 cv2.imwrite("tst.png", predimg)
 
 
-with open('/home/lilly/phd/crawlingtracking/final_data/ff_hdsegmentation/hd_video_segments.pkl', 'wb') as file:
-    pickle.dump(hd_video_segments, file)
+
+save_hd_video_segments(hd_video_segments, video_dir, '/home/lilly/phd/crawlingtracking/final_data/ff_hdsegmentation')
+
+
 
 
 #endregion
 
 
 
-
+####Adjust crop prompts####
 ann_frame_idx = 1 #frame
 ann_obj_id = 1 #object
 points = np.array([[70, 45],
@@ -1129,6 +1171,12 @@ def load_video_segments_from_h5(h5_path):
 
 
 loaded_segments = load_video_segments_from_h5("/home/lilly/phd/crawlingtracking/final_data/fullframe_segmentations/food-a-02252022134507-0000.h5")
+
+
+
+
+
+
 
 
 
